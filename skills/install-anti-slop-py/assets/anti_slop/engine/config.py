@@ -68,7 +68,9 @@ LEVEL_WARN = "warn"
 LEVEL_OFF = "off"
 _LEVELS = (LEVEL_ERROR, LEVEL_WARN, LEVEL_OFF)
 
-_TOP_LEVEL_KEYS = frozenset({"groups", "include", "exclude", "preset", "rules"})
+_TOP_LEVEL_KEYS = frozenset(
+    {"baseline", "groups", "include", "exclude", "preset", "rules"}
+)
 
 # Where a group's subpackage lives, and the groups this distribution ships. The list
 # is explicit rather than a directory scan so that an unknown name fails with the
@@ -208,7 +210,8 @@ class Config:
     overrides the enabled ``groups`` applied, followed by the rules those groups
     contribute. It is what the CLI runs and what ``--list-rules`` prints. ``preset``
     records which preset produced the starting levels in ``rules``, or ``None`` when
-    the configuration named none.
+    the configuration named none. ``baseline`` is the baseline file the project wants
+    applied to every run, relative to ``root``; ``--baseline`` overrides it.
     """
 
     root: Path
@@ -219,6 +222,7 @@ class Config:
     groups: tuple[str, ...] = ()
     registry: tuple[Rule, ...] = ()
     preset: str | None = None
+    baseline: str | None = None
 
     def levels(self) -> dict[str, str]:
         """Rule id -> configured level, for every rule in ``registry``."""
@@ -495,6 +499,7 @@ def _load_from(path: Path, registry: Sequence[Rule]) -> Config:
     groups = _read_groups(section.get("groups"), path)
     preset_name = _read_preset(section.get("preset"), path)
     preset = None if preset_name is None else preset_named(preset_name, str(path))
+    baseline = _read_baseline(section.get("baseline"), path)
     effective = resolve_registry(registry, groups, str(path))
     rules = _read_rules(section.get("rules"), path, effective, preset)
     return Config(
@@ -506,6 +511,7 @@ def _load_from(path: Path, registry: Sequence[Rule]) -> Config:
         groups=groups,
         registry=effective,
         preset=preset_name,
+        baseline=baseline,
     )
 
 
@@ -515,6 +521,19 @@ def _read_preset(value: TomlValue | None, path: Path) -> str | None:
         return None
     if not isinstance(value, str):
         message = f"{path}: [tool.{SECTION}].preset must be a string"
+        raise ConfigError(message)
+    return value
+
+
+def _read_baseline(value: TomlValue | None, path: Path) -> str | None:
+    """The ``baseline`` key: a path relative to the configuration root, or nothing."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        message = f"{path}: [tool.{SECTION}].baseline must be a string"
+        raise ConfigError(message)
+    if not value.strip():
+        message = f"{path}: [tool.{SECTION}].baseline must not be empty"
         raise ConfigError(message)
     return value
 

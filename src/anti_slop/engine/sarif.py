@@ -16,6 +16,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from anti_slop.engine.catalog import listing_key
+from anti_slop.engine.fingerprint import FINGERPRINT_KEY, fingerprint_map
 from anti_slop.engine.rule import Diagnostic, Rule
 
 __all__ = ["SARIF_SCHEMA_URI", "SARIF_VERSION", "format_sarif"]
@@ -54,7 +55,10 @@ type PhysicalLocationJson = dict[str, ArtifactLocationJson | RegionJson]
 type LocationJson = dict[str, PhysicalLocationJson]
 type RulePropertiesJson = dict[str, str | list[str]]
 type SarifRuleJson = dict[str, str | TextJson | RulePropertiesJson]
-type ResultJson = dict[str, str | int | TextJson | list[LocationJson]]
+type FingerprintsJson = dict[str, str]
+type ResultJson = dict[
+    str, str | int | TextJson | FingerprintsJson | list[LocationJson]
+]
 type DriverJson = dict[str, str | list[SarifRuleJson]]
 type ToolJson = dict[str, DriverJson]
 type UriBaseJson = dict[str, str]
@@ -69,6 +73,7 @@ def format_sarif(
     root: Path,
     *,
     tool_version: str,
+    fingerprints: Mapping[Diagnostic, str] | None = None,
 ) -> str:
     """A single SARIF 2.1.0 document, one run, over ``diagnostics``.
 
@@ -84,16 +89,33 @@ def format_sarif(
     reproduced in that order, so calling this twice on the same run produces
     byte-identical output. An empty ``diagnostics`` still produces a complete,
     valid document with empty ``rules``/``results`` arrays.
+
+    ``fingerprints`` supplies each result's ``partialFingerprints`` value. A caller
+    that already computed them -- the CLI does, for baseline mode -- passes them in so
+    the source files are read once; omitting the argument computes them here, so every
+    result carries one either way.
     """
     resolved_root = root.resolve()
     used_ids = {diagnostic.rule_id for diagnostic in diagnostics}
     used_rules = sorted((rule for rule in rules if rule.id in used_ids), key=listing_key)
     rule_index = {rule.id: index for index, rule in enumerate(used_rules)}
+    resolved_fingerprints = (
+        fingerprint_map(diagnostics, root) if fingerprints is None else fingerprints
+    )
 
     document: SarifDocumentJson = {
         "version": SARIF_VERSION,
         "$schema": SARIF_SCHEMA_URI,
-        "runs": [_run_entry(diagnostics, used_rules, rule_index, resolved_root, tool_version)],
+        "runs": [
+            _run_entry(
+                diagnostics,
+                used_rules,
+                rule_index,
+                resolved_root,
+                tool_version,
+                resolved_fingerprints,
+            )
+        ],
     }
     return json.dumps(document)
 
@@ -104,11 +126,15 @@ def _run_entry(
     rule_index: Mapping[str, int],
     root: Path,
     tool_version: str,
+    fingerprints: Mapping[Diagnostic, str],
 ) -> RunJson:
     return {
         "tool": {"driver": _driver_entry(used_rules, tool_version)},
         "originalUriBaseIds": {_SRCROOT: {"uri": f"{root.as_uri()}/"}},
-        "results": [_result_entry(diagnostic, rule_index, root) for diagnostic in diagnostics],
+        "results": [
+            _result_entry(diagnostic, rule_index, root, fingerprints)
+            for diagnostic in diagnostics
+        ],
     }
 
 
@@ -138,17 +164,24 @@ def _rule_entry(rule: Rule) -> SarifRuleJson:
 
 
 def _result_entry(
-    diagnostic: Diagnostic, rule_index: Mapping[str, int], root: Path
+    diagnostic: Diagnostic,
+    rule_index: Mapping[str, int],
+    root: Path,
+    fingerprints: Mapping[Diagnostic, str],
 ) -> ResultJson:
     level = _LEVEL_WARNING if diagnostic.severity == "warn" else _LEVEL_ERROR
-    # Wave 2: a `partialFingerprints` entry -- a content hash of the anchored region
-    # that survives line churn -- belongs here, once the analyzer can compute one.
+    # `partialFingerprints` carries the same identity a baseline entry is keyed by
+    # (`engine/fingerprint.py`): rule, path, and the normalized text of the anchored
+    # line, with no line number in it. A viewer that tracks alerts across commits --
+    # GitHub code scanning among them -- therefore follows a finding through the line
+    # churn above it, and matches an alert to the baseline entry that silenced it.
     return {
         "ruleId": diagnostic.rule_id,
         "ruleIndex": rule_index[diagnostic.rule_id],
         "level": level,
         "message": {"text": diagnostic.message},
         "locations": [_location_entry(diagnostic, root)],
+        "partialFingerprints": {FINGERPRINT_KEY: fingerprints[diagnostic]},
     }
 
 

@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import argparse
 import sys
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from anti_slop import CORE_RULES, __version__
+from anti_slop.engine.baseline import (
+    DEFAULT_BASELINE_NAME,
+    BaselineOutcome,
+    apply_baseline,
+    load_baseline,
+    write_baseline,
+)
 from anti_slop.engine.catalog import (
     explain_json,
     explain_text,
@@ -22,9 +29,14 @@ from anti_slop.engine.config import (
     known_rules,
     load_config,
 )
+from anti_slop.engine.diff import ChangedLines, DiffError, changed_lines
+from anti_slop.engine.fingerprint import fingerprints_for
 from anti_slop.engine.rule import Diagnostic, Rule
 from anti_slop.engine.runner import (
     EXIT_ERROR,
+    EXIT_OK,
+    RunOutcome,
+    collect_changed_files,
     collect_files,
     format_github,
     format_json,
@@ -37,6 +49,11 @@ from anti_slop.engine.sarif import format_sarif
 __all__ = ["cli", "main"]
 
 PROG = "anti-slop"
+
+# The formats that carry a run summary. `json`, `sarif` and `github` are consumed by
+# machines that expect one document (or one annotation per line) and nothing else, so
+# the baseline summary would be corruption rather than information there.
+_SUMMARY_FORMATS = ("text",)
 
 _FORMATS = ("text", "json", "github", "sarif")
 
@@ -100,6 +117,46 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "hide the findings recorded in this baseline file; overrides"
+            f" [tool.anti-slop].baseline (default: {DEFAULT_BASELINE_NAME} next to"
+            " the configuration, used only when asked for)"
+        ),
+    )
+    parser.add_argument(
+        "--generate-baseline",
+        action="store_true",
+        dest="generate_baseline",
+        help=(
+            "write every current finding to the baseline file instead of reporting"
+            " them, and exit 0; an existing baseline is replaced, not merged"
+        ),
+    )
+    diff_modes = parser.add_mutually_exclusive_group()
+    diff_modes.add_argument(
+        "--diff",
+        default=None,
+        metavar="BASE",
+        help=(
+            "only report findings on lines this checkout changed since its merge base"
+            " with BASE -- staged, unstaged and untracked included"
+        ),
+    )
+    diff_modes.add_argument(
+        "--diff-committed",
+        default=None,
+        dest="diff_committed",
+        metavar="BASE",
+        help=(
+            "like --diff, but only what is committed: the merge base with BASE"
+            " compared against HEAD, ignoring the working tree"
+        ),
+    )
+    parser.add_argument(
         "--jobs",
         type=int,
         default=None,
@@ -146,11 +203,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     try:
+        _reject_conflicting_modes(args)
         rules = _select_rules(config, args.rules)
-        roots = resolve_roots(args.paths, config)
-        files = collect_files(roots, config)
         jobs = _validate_jobs(args.jobs)
-    except ConfigError as error:
+        changed = _resolve_changed_lines(args, config)
+        files = _collect_targets(args.paths, config, changed)
+    except (ConfigError, DiffError) as error:
         print(f"{PROG}: {error}", file=sys.stderr)
         return EXIT_ERROR
 
@@ -160,12 +218,52 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{PROG}: {error}", file=sys.stderr)
         return EXIT_ERROR
 
+    # Diff filtering comes first and baseline second: a baseline records findings for
+    # the whole project, so matching it against a diff-narrowed set would report the
+    # narrow set's own entries as stale on every run.
+    diagnostics = _within_diff(outcome.diagnostics, changed)
+    fingerprints = _fingerprints(args, config, diagnostics)
+
+    if args.generate_baseline:
+        if outcome.failures:
+            _report_failures(outcome.failures)
+            return EXIT_ERROR
+        return _generate_baseline(args, config, fingerprints)
+
+    try:
+        baselined = _apply_baseline(
+            args, config, diagnostics, fingerprints, whole_project=changed is None
+        )
+    except ConfigError as error:
+        print(f"{PROG}: {error}", file=sys.stderr)
+        return EXIT_ERROR
+
     _print_diagnostics(
-        outcome.diagnostics, args.output_format, rules=rules, root=config.root
+        baselined.diagnostics,
+        args.output_format,
+        rules=rules,
+        root=config.root,
+        fingerprints=_by_diagnostic(diagnostics, fingerprints),
+        summary=_summary_for(baselined, args.output_format),
     )
-    for failure in outcome.failures:
-        print(f"{PROG}: {failure}", file=sys.stderr)
-    return outcome.exit_code()
+    _report_failures(outcome.failures)
+    return RunOutcome(
+        diagnostics=baselined.diagnostics, failures=outcome.failures
+    ).exit_code()
+
+
+def _reject_conflicting_modes(args: argparse.Namespace) -> None:
+    """``--generate-baseline`` records a project, so it cannot record only a diff."""
+    if not args.generate_baseline:
+        return
+    if args.diff is None and args.diff_committed is None:
+        return
+    message = (
+        "--generate-baseline records the findings of a whole project, so it cannot"
+        " be combined with --diff/--diff-committed: the file it wrote would silence"
+        " only the lines that happened to be changed"
+    )
+    raise ConfigError(message)
 
 
 def _validate_jobs(jobs: int | None) -> int | None:
@@ -175,25 +273,167 @@ def _validate_jobs(jobs: int | None) -> int | None:
     return jobs
 
 
+def _resolve_changed_lines(
+    args: argparse.Namespace, config: Config
+) -> ChangedLines | None:
+    """The lines the requested diff touched, or ``None`` when no diff was requested."""
+    if args.diff is not None:
+        return changed_lines(args.diff, root=config.root, committed=False)
+    if args.diff_committed is not None:
+        return changed_lines(args.diff_committed, root=config.root, committed=True)
+    return None
+
+
+def _collect_targets(
+    cli_paths: Sequence[str], config: Config, changed: ChangedLines | None
+) -> tuple[Path, ...]:
+    """Which files to check: the diff's files, or the configured walk.
+
+    Explicit paths always bound the walk. In diff mode they also *stay* the walk --
+    the diff then only filters the diagnostics -- because a caller who named paths
+    meant those paths. With no explicit paths, diff mode walks the changed files
+    themselves instead of the whole ``include`` tree.
+    """
+    roots = resolve_roots(cli_paths, config)
+    if changed is None or cli_paths:
+        return collect_files(roots, config)
+    return collect_changed_files(roots, changed.paths(), config)
+
+
+def _within_diff(
+    diagnostics: Sequence[Diagnostic], changed: ChangedLines | None
+) -> tuple[Diagnostic, ...]:
+    """Keep the diagnostics whose anchor line the change touched."""
+    if changed is None:
+        return tuple(diagnostics)
+    return tuple(
+        diagnostic
+        for diagnostic in diagnostics
+        if changed.contains(diagnostic.path, diagnostic.line)
+    )
+
+
+def _fingerprints(
+    args: argparse.Namespace, config: Config, diagnostics: Sequence[Diagnostic]
+) -> tuple[str, ...]:
+    """Fingerprints for the modes that consume them, and nothing for the ones that do not.
+
+    Computing a fingerprint means reading the file a finding sits in a second time.
+    Three modes need that -- writing a baseline, applying one, and SARIF output -- and
+    a plain ``--format text`` run needs none of it.
+    """
+    wants_baseline = (
+        args.generate_baseline
+        or args.baseline is not None
+        or config.baseline is not None
+    )
+    if wants_baseline or args.output_format == "sarif":
+        return fingerprints_for(diagnostics, config.root)
+    return ()
+
+
+def _by_diagnostic(
+    diagnostics: Sequence[Diagnostic], fingerprints: Sequence[str]
+) -> dict[Diagnostic, str]:
+    """The fingerprints keyed by finding, or nothing when none were computed."""
+    if not fingerprints:
+        return {}
+    return dict(zip(diagnostics, fingerprints, strict=True))
+
+
+def _baseline_path(args: argparse.Namespace, config: Config) -> Path:
+    """``--baseline``, else ``[tool.anti-slop].baseline``, else the default name.
+
+    A CLI path is taken as written (relative to the working directory, like
+    ``--config``); a configured one is relative to the configuration root, like
+    ``include`` and ``exclude``.
+    """
+    if args.baseline is not None:
+        return args.baseline
+    if config.baseline is not None:
+        return config.root / config.baseline
+    return config.root / DEFAULT_BASELINE_NAME
+
+
+def _apply_baseline(
+    args: argparse.Namespace,
+    config: Config,
+    diagnostics: Sequence[Diagnostic],
+    fingerprints: Sequence[str],
+    *,
+    whole_project: bool = True,
+) -> BaselineOutcome:
+    """Hide the baselined findings -- but only when a baseline was actually asked for.
+
+    A baseline file that merely happens to sit at the default path is not applied: a
+    run that silently hid findings because of a file nobody named would be the worst
+    possible default for a tool whose whole point is saying what it found.
+    """
+    if args.baseline is None and config.baseline is None:
+        return BaselineOutcome(diagnostics=tuple(diagnostics), hidden=0, stale=0)
+    baseline = load_baseline(_baseline_path(args, config))
+    return apply_baseline(
+        baseline, diagnostics, fingerprints, whole_project=whole_project
+    )
+
+
+def _generate_baseline(
+    args: argparse.Namespace, config: Config, fingerprints: Sequence[str]
+) -> int:
+    path = _baseline_path(args, config)
+    try:
+        count = write_baseline(path, fingerprints)
+    except ConfigError as error:
+        print(f"{PROG}: {error}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.output_format in _SUMMARY_FORMATS:
+        distinct = len(set(fingerprints))
+        print(f"wrote {path}: {count} findings across {distinct} fingerprints")
+    return EXIT_OK
+
+
+def _summary_for(baselined: BaselineOutcome, output_format: str) -> str | None:
+    if output_format not in _SUMMARY_FORMATS:
+        return None
+    return baselined.summary()
+
+
+def _report_failures(failures: Sequence[str]) -> None:
+    for failure in failures:
+        print(f"{PROG}: {failure}", file=sys.stderr)
+
+
 def _print_diagnostics(
     diagnostics: Sequence[Diagnostic],
     output_format: str,
     *,
     rules: Sequence[Rule],
     root: Path,
+    fingerprints: Mapping[Diagnostic, str],
+    summary: str | None = None,
 ) -> None:
     if output_format == "json":
         print(format_json(diagnostics))
         return
     if output_format == "sarif":
-        print(format_sarif(diagnostics, rules, root, tool_version=__version__))
-        return
-    if not diagnostics:
+        print(
+            format_sarif(
+                diagnostics,
+                rules,
+                root,
+                tool_version=__version__,
+                fingerprints=fingerprints,
+            )
+        )
         return
     if output_format == "github":
-        print(format_github(diagnostics))
+        if diagnostics:
+            print(format_github(diagnostics))
         return
-    print(format_text(diagnostics))
+    if diagnostics:
+        print(format_text(diagnostics))
+    if summary is not None:
+        print(summary)
 
 
 def _select_rules(config: Config, requested: Sequence[str] | None) -> tuple[Rule, ...]:

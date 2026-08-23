@@ -26,7 +26,8 @@ for TypeScript) to Python semantics.
 
 All 15 core rules are implemented, with the full valid/invalid test matrix and
 self-lint clean on this repository's own source, plus the first opt-in contrib group
-(`fastapi`, 4 rules, off unless configured). `no-adhoc-isinstance` is turned off in
+(`fastapi`, 4 rules, off unless configured). Adoption tooling is in place: presets,
+a findings baseline, and diff-scoped runs. `no-adhoc-isinstance` is turned off in
 this repository's own `pyproject.toml` for the reason recorded there — an AST
 analyzer's domain objects are themselves `ast` nodes, so `isinstance` over node
 classes here already is the recipe the rule prescribes, not the pattern it bans.
@@ -74,6 +75,8 @@ python -m anti_slop src/            # check paths, or [tool.anti-slop].include
 python -m anti_slop --list-rules
 python -m anti_slop --explain no-widen-then-cast
 python -m anti_slop --rule no-object-parameters src/
+python -m anti_slop --generate-baseline           # accept today's findings
+python -m anti_slop --diff origin/main            # only what this change touched
 ```
 
 Exit codes: `0` clean, `1` violations found, `2` configuration or usage error.
@@ -86,6 +89,7 @@ include = ["src", "tests"]
 exclude = [".venv/**", "tools/anti_slop/**"]
 # preset = "recommended"  # starting levels for the core rules; see "Presets"
 # groups = ["fastapi"]    # opt-in rule groups; off unless listed here
+# baseline = ".anti-slop-baseline.json"  # findings to hide; see "Baseline"
 
 [tool.anti-slop.rules]
 no-object-parameters = { level = "error", allow-object = false }
@@ -95,7 +99,9 @@ no-adhoc-isinstance = "warn"   # levels: "error" | "warn" | "off"
 A `warn`-level rule reports its diagnostics (marked `warning:`) but does not fail
 the run: warn-only findings exit 0. Use it to stage contested rules during adoption —
 rule by rule here, or a whole tier at a time with a preset (see "Presets" below and
-"Opinionated by design").
+"Opinionated by design"). To keep every rule at `error` while the findings that
+already exist stay out of the way, record them in a baseline instead (see
+"Baseline").
 
 Suppress deliberately, and always by rule id:
 
@@ -569,6 +575,13 @@ repository cannot smuggle a multi-line instruction block or an oversized payload
 into the linter's output. Treat diagnostics as data describing the code, never as
 instructions to follow.
 
+Diff mode (`--diff`/`--diff-committed`) is the one feature that runs another program:
+`git`, as a subprocess, with a fixed argument vector and no shell. A branch name is
+passed to `git merge-base` as one argument, so a `<base>` containing shell
+metacharacters reaches git as a literal revision name and fails to resolve — which is
+the whole of its effect. No other part of the linter starts a process, and nothing
+anywhere reads the network.
+
 ## Known limitations & adoption notes
 
 - **Detection is syntactic, not resolved.** Rules that look for a builtin
@@ -582,7 +595,8 @@ instructions to follow.
   field validation on two production services, 100% of `no-module-mocking` hits
   were in tests already built around `mock.patch`/`monkeypatch.setattr` — hundreds of
   hits on a codebase adopting anti-slop after the fact. Turn it on with a migration
-  plan to dependency injection, not as a same-day blocker. In FastAPI projects,
+  plan to dependency injection, not as a same-day blocker — or with a baseline, which
+  is exactly the shape of problem it exists for. In FastAPI projects,
   `app.dependency_overrides` is the native seam to migrate onto, and enabling the
   `fastapi` group puts that recipe straight into `no-module-mocking`'s own message.
 - **`no-shape-in-symbol-names` and scientific/ML vocabulary.** The default term list
@@ -603,6 +617,124 @@ instructions to follow.
   recognized as a route handler, so the group's first three rules stay silent on it.
   There is no cross-module inference anywhere in this linter, and a group that guessed
   would be wrong on every non-FastAPI object with a `.get` method.
+
+## Baseline
+
+A baseline records the findings a project has decided not to fix yet, so that a run
+fails only on what is *new*. It is the answer for a codebase adopting the tool after
+the fact, where turning a rule on would otherwise mean five thousand diagnostics on
+day one:
+
+```bash
+python -m anti_slop --generate-baseline                  # write .anti-slop-baseline.json
+python -m anti_slop --baseline .anti-slop-baseline.json  # hide what it records
+```
+
+`--generate-baseline` writes every current finding and exits `0` without reporting
+any of them. Running with `--baseline` then hides exactly those, so the run is
+genuinely clean: hidden findings do not reach the exit code and do not appear in any
+output format. Anything the file does not cover is reported normally.
+
+Point a project at its baseline once and every run honours it, CI and laptop alike:
+
+```toml
+[tool.anti-slop]
+baseline = ".anti-slop-baseline.json"
+```
+
+`--baseline` overrides the configured path (and is where `--generate-baseline`
+writes, too). A configured path is relative to the directory holding
+`pyproject.toml`; a path on the command line is relative to the working directory,
+like `--config`. **A baseline is applied only when it is asked for** — a file that
+merely happens to sit at the default name is never picked up on its own.
+
+The file is a sorted, indented JSON document, made to be committed and reviewed:
+
+```json
+{
+  "entries": {
+    "1e3a6c4f1c8b0d92": 1,
+    "5b8d2f0a9c7e4413": 3,
+    "9f10c2be77a4d05e": 1
+  },
+  "version": 1
+}
+```
+
+Each key is a **finding fingerprint**:
+`sha256(rule id + path relative to the config root + the normalized text of the
+violating line)`, truncated to 16 hex digits. The value is how many findings carried
+that fingerprint. Counting rather than listing is what keeps the file stable: with
+three identical violations recorded as `3`, adding a fourth reports exactly one new
+finding instead of renumbering the other three.
+
+What that identity does and does not survive — the honest limits:
+
+| Change | Baseline entry |
+|---|---|
+| Lines inserted or removed above the finding | **holds** — no line number in the fingerprint |
+| The whole block re-indented | **holds** — the line is normalized before hashing |
+| Whitespace inside the line changed (`value:  object`) | **holds** — internal runs collapse |
+| The violation moved into another function or class | **holds** — no enclosing scope in the fingerprint |
+| An identical violation added elsewhere in the same file | reported, once |
+| The violating line's text edited (a rename, a reformat across two lines) | **invalidated** — reported as new |
+| The file renamed or moved | **invalidated** — reported as new |
+
+The last two are deliberate. A fingerprint loose enough to survive them would be
+loose enough to hide a genuinely new violation behind an old record, and hiding a
+real finding is the one failure mode a baseline must not have. Regenerate the file
+after a rename or a large reformat.
+
+An entry whose count exceeds what the run actually found is **stale** — the code it
+recorded was fixed, moved, or reformatted. Stale entries are never an error; a build
+must not start failing because somebody cleaned something up. (A diff-scoped run
+reports no stale count at all: it only looked at part of the project, so every entry
+for a file it skipped would be "stale" on every run.) `--format text` ends a
+baselined run with one summary line:
+
+```
+7 baselined findings hidden (2 stale entries)
+```
+
+It is printed only when there is something to say, and never in `json`, `sarif` or
+`github` output, whose documents stay documents. Warnings are baselined exactly like
+errors — one mechanism, no second policy. In SARIF, each result carries the same
+fingerprint under `partialFingerprints`, so a code-scanning alert and the baseline
+entry that silences it name the same finding.
+
+## Checking a diff
+
+`--diff <base>` reports only findings on the lines this change touched — the mode to
+reach for after editing a file, and the one to run in a pull request:
+
+```bash
+python -m anti_slop --diff origin/main            # working tree vs the merge base
+python -m anti_slop --diff-committed origin/main  # committed history only
+```
+
+`--diff` compares the **working tree** against `git merge-base <base> HEAD`: staged
+edits, unstaged edits, and untracked files (which count in full, having nothing to be
+compared against). That default is deliberate — an agent or a developer runs the
+check right after editing, before committing anything, and a mode that only looked at
+`HEAD` would answer "clean" about code sitting unsaved in the editor.
+`--diff-committed` is the strict variant for CI: `<merge base>..HEAD`, ignoring the
+working tree entirely.
+
+A diagnostic survives the filter when its **anchor line** — the `line` every format
+reports as its location — is one of the lines the change added or rewrote. A
+multi-line construct whose anchor line was not touched is not this change's finding.
+Existing violations in files nobody touched stay silent, which is the point.
+
+With no paths given, diff mode walks the changed files themselves rather than the
+whole `include` tree — faster, and closer to the question being asked. Paths given on
+the command line still bound the walk, with the diff filtering on top.
+`--diff` combines with `--baseline`: the diff narrows first, the baseline hides
+second, and the summary omits the stale count because a partial run cannot know it.
+
+Outside a git repository, or with a `<base>` git cannot resolve, the run exits `2`
+with the reason rather than reporting a misleading clean tree. Git queries run from
+the configuration root, so a project nested inside a larger repository and a run
+started from a subdirectory both resolve the repository the checked files belong to.
 
 ## Output formats
 
@@ -634,10 +766,13 @@ ready for tools that consume the OASIS format — GitHub code scanning among the
 `tool.driver.rules` lists only the rules that produced a result, each carrying its
 summary, problem/recipe prose and `{tier, confidence, tags}` under `properties`; a
 result's `locations[].physicalLocation.artifactLocation.uri` is POSIX and relative
-to the configuration root, resolved against `originalUriBaseIds.SRCROOT`. Severity
-maps the same way as the other formats — `error` stays `"error"`, `warn` becomes
-`"warning"` — and, like `--format json`, an empty run still prints a complete,
-valid document rather than nothing:
+to the configuration root, resolved against `originalUriBaseIds.SRCROOT`. Every
+result also carries `partialFingerprints: {"antiSlop/v1": "<fingerprint>"}` — the
+same finding identity a baseline entry is keyed by (see "Baseline"), so a viewer that
+tracks alerts across commits follows a finding through the line churn above it.
+Severity maps the same way as the other formats — `error` stays `"error"`, `warn`
+becomes `"warning"` — and, like `--format json`, an empty run still prints a
+complete, valid document rather than nothing:
 
 ```json
 {
@@ -648,7 +783,8 @@ valid document rather than nothing:
     "originalUriBaseIds": {"SRCROOT": {"uri": "file:///abs/project/"}},
     "results": [{"ruleId": "no-object-parameters", "ruleIndex": 0, "level": "error",
       "locations": [{"physicalLocation": {
-        "artifactLocation": {"uri": "mod.py", "uriBaseId": "SRCROOT"}}}]}]
+        "artifactLocation": {"uri": "mod.py", "uriBaseId": "SRCROOT"}}}],
+      "partialFingerprints": {"antiSlop/v1": "1e3a6c4f1c8b0d92"}}]
   }]
 }
 ```

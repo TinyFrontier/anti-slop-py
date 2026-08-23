@@ -29,6 +29,7 @@ __all__ = [
     "AnalysisError",
     "RunOutcome",
     "check_source",
+    "collect_changed_files",
     "collect_files",
     "format_github",
     "format_json",
@@ -177,6 +178,35 @@ def collect_files(roots: Iterable[Path], config: Config) -> tuple[Path, ...]:
 
     found.sort(key=str)
     return tuple(found)
+
+
+def collect_changed_files(
+    roots: Sequence[Path], changed: Sequence[Path], config: Config
+) -> tuple[Path, ...]:
+    """The Python files of ``changed`` that lie within ``roots`` -- the diff-mode walk.
+
+    In diff mode with no explicit paths, walking the whole ``include`` tree only to
+    throw almost all of it away is both slower and less honest than starting from the
+    files the change touched. ``roots`` still bounds the result -- a repository-wide
+    diff must not drag in files the configuration never governed -- and ``exclude``
+    still applies, because :func:`collect_files` does the final pass. A path in the
+    diff that no longer exists (deleted in the working tree) is simply absent.
+    """
+    targets = tuple(
+        path
+        for path in changed
+        if path.suffix in _PYTHON_SUFFIXES and path.is_file() and _within(path, roots)
+    )
+    return collect_files(targets, config)
+
+
+def _within(path: Path, roots: Sequence[Path]) -> bool:
+    resolved = path.resolve()
+    for root in roots:
+        base = root.resolve()
+        if resolved == base or resolved.is_relative_to(base):
+            return True
+    return False
 
 
 def _is_excluded(path: Path, root: Path, config: Config, path_filter: PathFilter) -> bool:
