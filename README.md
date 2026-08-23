@@ -10,8 +10,12 @@ narrowing. A type checker *permits* all of these by construction, because they a
 legal holes in its own type system; anti-slop bans exactly those holes. Every
 diagnostic is written to be executed by an agent: it says what to write instead —
 parse at the I/O boundary, name the domain type, inject a real seam — not merely
-that something is forbidden. It is meant to be **vendored** into a repository, read,
-and adjusted to the team's standards, not depended upon.
+that something is forbidden. **Vendoring is the primary installation model**: the
+copy is meant to be read and adjusted to the team's standards, not depended upon,
+and in vendored mode nothing is installed at all. A standard pre-commit package
+hook is also supported (see "Use with pre-commit").
+
+Requires Python 3.12+. Zero runtime dependencies.
 
 > Ruff finds Python problems.
 > Type checkers find type problems.
@@ -24,7 +28,7 @@ and adjusted to the team's standards, not depended upon.
 </picture>
 
 Analysis is purely syntactic — stdlib `ast` and `tokenize`, no type checker in the
-loop, no external dependency, no installation. Semantics beyond raw syntax come from
+loop, no external dependency. Semantics beyond raw syntax come from
 a local scope table (lexical name and import resolution, alias chains) built once per
 file, the same "AST plus scopes, nothing heavier" discipline the original Oxlint
 plugin follows.
@@ -42,6 +46,30 @@ them into a report on one change. `no-adhoc-isinstance` is turned off in
 this repository's own `pyproject.toml` for the reason recorded there — an AST
 analyzer's domain objects are themselves `ast` nodes, so `isinstance` over node
 classes here already is the recipe the rule prescribes, not the pattern it bans.
+
+## The ten-second version
+
+An agent hits a type error and "fixes" it:
+
+```python
+from typing import Any, cast
+
+
+def promote(user: User) -> None:
+    raw: Any = user
+    admin = cast(User, raw)
+    grant(admin)
+```
+
+The type checker is satisfied. anti-slop is not:
+
+```
+service.py:6:13 no-widen-then-cast `raw` is `user` widened to `Any` a few lines up, and this `cast` claims a narrow type back from it. … Delete the widening step and use `user` directly, with the type it already carries.
+service.py:6:13 require-safety-comment `cast` to `User` asserts a claim the type checker cannot verify: from here on the value is `User` on your word alone, with nothing checked at runtime. …
+```
+
+Real output, trimmed at the ellipses. Both diagnostics end in a recipe, not a
+prohibition — written to be executed by the same agent that just wrote the slop.
 
 ## Install into a repository (agent skill)
 
@@ -765,9 +793,12 @@ the command line still bound the walk, with the diff filtering on top.
 second, and the summary omits the stale count because a partial run cannot know it.
 
 Outside a git repository, or with a `<base>` git cannot resolve, the run exits `2`
-with the reason rather than reporting a misleading clean tree. Git queries run from
-the configuration root, so a project nested inside a larger repository and a run
-started from a subdirectory both resolve the repository the checked files belong to.
+with the reason rather than reporting a misleading clean tree. Git queries are
+anchored at the **scan roots** — the directories and files being checked — never at
+the configuration file, so an external `--config` cannot make the diff resolve
+against the wrong repository and answer with a false clean. All scanned paths must
+belong to one git repository; a diff-scoped run that spans more than one exits `2`
+explicitly.
 
 ## Reviewing an agent's diff
 
