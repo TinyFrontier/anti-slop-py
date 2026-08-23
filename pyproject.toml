@@ -37,4 +37,11 @@ include = ["src", "tests"]
 exclude = [".venv/**", "**/__pycache__/**"]
 
 [tool.anti-slop.rules]
+no-any-parameters = "error"
+no-any-returns = "error"
+no-chained-casts = "error"
+no-conditional-empty-dict-spread = "error"
+no-known-value-widening = "error"
 no-object-parameters = "error"
+no-shape-in-symbol-names = "error"
+no-unsafe-dict-values = "error"

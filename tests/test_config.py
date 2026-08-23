@@ -53,7 +53,7 @@ def test_level_error_and_off(tmp_path: Path) -> None:
         "{RULE_ID}" = "off"
     """)
     assert disabled.rules[RULE_ID].enabled is False
-    assert disabled.enabled_rules(CORE_RULES) == ()
+    assert RULE_ID not in {rule.id for rule in disabled.enabled_rules(CORE_RULES)}
 
 
 def test_table_form_carries_level_and_options(tmp_path: Path) -> None:
