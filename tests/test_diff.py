@@ -398,3 +398,77 @@ def test_parse_patch_reads_hunk_ranges_and_skips_deletions(tmp_path: Path) -> No
 
 def test_parse_patch_of_an_empty_diff_is_empty(tmp_path: Path) -> None:
     assert parse_patch("", tmp_path) == {}
+
+
+# --------------------------------------------------------------------------- #
+# the git repository is anchored at the scan roots, not at the config file
+# --------------------------------------------------------------------------- #
+
+
+def test_external_config_still_diffs_the_scanned_repository(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Field regression: `--config` outside the repo must not move the git anchor."""
+    project = make_repo(tmp_path / "repo")
+    write(project / "src" / "legacy.py", LEGACY_MODULE + APPENDED_VIOLATION)
+
+    outside = write(tmp_path / "elsewhere" / "pyproject.toml", PROJECT_CONFIG)
+    code = main([str(project / "src"), "--config", str(outside), "--diff", "main"])
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert len(findings(captured.out)) == 1
+
+
+def test_a_config_inside_another_repository_does_not_hijack_the_diff(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The silent failure mode: the config dir's own repo has the same ref name."""
+    decoy = tmp_path / "decoy"
+    make_repo(decoy)
+
+    project = make_repo(tmp_path / "repo")
+    write(project / "src" / "legacy.py", LEGACY_MODULE + APPENDED_VIOLATION)
+
+    code = main(
+        [str(project / "src"), "--config", str(decoy / "pyproject.toml"), "--diff", "main"]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert len(findings(captured.out)) == 1
+
+
+def test_paths_spanning_two_repositories_exit_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    first = make_repo(tmp_path / "first")
+    second = make_repo(tmp_path / "second")
+
+    code = main(
+        [str(first / "src"), str(second / "src"), "--config",
+         str(first / "pyproject.toml"), "--diff", "main"]
+    )
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "one repository" in captured.err
+
+
+def test_review_with_an_external_config_works(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    project = make_repo(tmp_path / "repo")
+    write(project / "src" / "legacy.py", LEGACY_MODULE + APPENDED_VIOLATION)
+
+    outside = write(tmp_path / "elsewhere" / "pyproject.toml", PROJECT_CONFIG)
+    code = main(
+        ["review", "--base", "main", str(project / "src"), "--config", str(outside)]
+    )
+    captured = capsys.readouterr()
+
+    # Under review's default `agent` preset this policy-tier rule reports as a
+    # warning, so the finding is present but does not decide the exit code.
+    assert code == 0
+    assert RULE_ID in captured.out
+    assert "POLICY" in captured.out

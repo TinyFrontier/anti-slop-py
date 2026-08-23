@@ -399,7 +399,7 @@ def _review(argv: Sequence[str]) -> int:
             registry=CORE_RULES, explicit_path=args.config, preset=preset
         )
         jobs = _validate_jobs(args.jobs)
-        changed = changed_lines(args.base, root=config.root, committed=False)
+        changed = _changed_for(args.base, committed=False, args=args, config=config)
         files = _collect_targets(args.paths, config, changed)
     except (ConfigError, DiffError) as error:
         print(f"{PROG}: {error}", file=sys.stderr)
@@ -482,10 +482,44 @@ def _resolve_changed_lines(
 ) -> ChangedLines | None:
     """The lines the requested diff touched, or ``None`` when no diff was requested."""
     if args.diff is not None:
-        return changed_lines(args.diff, root=config.root, committed=False)
+        return _changed_for(args.diff, committed=False, args=args, config=config)
     if args.diff_committed is not None:
-        return changed_lines(args.diff_committed, root=config.root, committed=True)
+        return _changed_for(
+            args.diff_committed, committed=True, args=args, config=config
+        )
     return None
+
+
+def _changed_for(
+    base: str, *, committed: bool, args: argparse.Namespace, config: Config
+) -> ChangedLines:
+    """The change against ``base``, anchored at the repository being scanned.
+
+    The git repository is resolved from the scan roots, never from the location of
+    the configuration file: with an external ``--config`` the two differ, and
+    anchoring at the config would compute the diff in whatever repository happens
+    to contain that directory -- at best a loud missing-ref error, at worst a
+    silently wrong (empty) change set and a false clean.
+    """
+    roots = resolve_roots(args.paths, config)
+    anchor = next((root for root in roots if root.exists()), None)
+    if anchor is None:
+        message = f"path does not exist: {roots[0]}"
+        raise ConfigError(message)
+    changed = changed_lines(
+        base, root=anchor if anchor.is_dir() else anchor.parent, committed=committed
+    )
+    for root in roots:
+        resolved = root.resolve()
+        if resolved != changed.toplevel and not resolved.is_relative_to(
+            changed.toplevel
+        ):
+            message = (
+                f"path {root} lies outside the git repository at"
+                f" {changed.toplevel}; a diff-scoped run must target one repository"
+            )
+            raise DiffError(message)
+    return changed
 
 
 def _collect_targets(
