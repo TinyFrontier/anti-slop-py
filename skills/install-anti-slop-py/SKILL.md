@@ -177,10 +177,36 @@ layout and tooling.
    Ruff owns style and correctness, the type checker owns types, anti-slop-py owns
    evidence policy.
 
-6. Check the manifest for a **direct** `fastapi` dependency. There is no FastAPI rule
-   group to enable yet — it is planned, not shipped — so enable nothing extra; note in the
-   report that the core rules already cover the handler bodies. Never turn on an opt-in
-   group because a framework appears transitively in a lockfile.
+6. Check the manifest for a **direct** `fastapi` dependency — `[project.dependencies]`,
+   `[tool.poetry.dependencies]`, `requirements*.txt`, or the equivalent the repository
+   uses. Enable the opt-in `fastapi` group only when FastAPI is declared there, or when
+   the user asks for it explicitly. A framework that appears only transitively in a
+   lockfile is not a reason to turn a group on.
+
+   ```toml
+   [tool.anti-slop]
+   groups = ["fastapi"]
+
+   [tool.anti-slop.rules]
+   "fastapi/no-dict-body-parameters" = "error"
+   "fastapi/no-raw-request-parsing" = "error"
+   "fastapi/no-state-attribute-access" = "error"
+   "fastapi/no-untyped-route-response" = "error"
+   ```
+
+   The `groups` key is what makes those rules exist; the `[tool.anti-slop.rules]` entries
+   spell them out next to the core ones so the file records the full policy. Their ids
+   carry the `fastapi/` prefix everywhere — configuration, diagnostics, and
+   `# anti-slop: ignore[fastapi/...]` suppressions — and the quotes are required, since
+   the id contains a slash. Verify with `python tools/anti_slop --list-rules`: the group's
+   four rules are listed after the core ones once the group is on.
+
+   Enabling the group also retargets `no-module-mocking`: its diagnostic keeps the same
+   problem statement but prescribes `app.dependency_overrides` instead of the generic
+   "inject the collaborator" recipe. Say so in the report — on a FastAPI repository with
+   an existing `mock.patch`-based test suite, that message is the migration instruction.
+   If the repository is not a FastAPI project, add nothing here and note that the core
+   rules already cover the handler bodies.
 
 7. Run the linter and the repository's own checks (`ruff check`, the type checker, tests).
 
@@ -198,6 +224,7 @@ layout and tooling.
 8. Review the final diff and report:
    - the vendored path and how to run it,
    - the configuration added, with `include`/`exclude` decisions,
+   - any opt-in group enabled, and the dependency in the manifest that justified it,
    - Ruff rules disabled as duplicates,
    - pre-commit hook and/or CI step added,
    - checks run and every remaining finding, per rule.
@@ -209,5 +236,6 @@ and keep any project-specific rules the team added in their own package rather t
 folding them back into the copy. Carry over the existing `[tool.anti-slop]` levels only
 after checking that none of them was set to `"off"` to silence a real finding; a rule
 turned off needs a comment saying why, as the linter's own repository does for
-`no-adhoc-isinstance`. Framework policy stays out of the core: it belongs in an opt-in
-group under `anti_slop/contrib/`.
+`no-adhoc-isinstance`. Carry over `groups` the same way, checking that each group still
+matches a direct dependency. Framework policy stays out of the core: it belongs in an
+opt-in group under `anti_slop/contrib/`, the way the shipped `fastapi` group does.

@@ -65,7 +65,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--list-rules",
         action="store_true",
-        help="list the registered rules with their options and exit",
+        help=(
+            "list the active rules -- core plus the rules of every enabled group --"
+            " with their options, and exit"
+        ),
     )
     parser.add_argument(
         "--jobs",
@@ -85,12 +88,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    try:
+        config = load_config(registry=CORE_RULES, explicit_path=args.config)
+    except ConfigError as error:
+        print(f"{PROG}: {error}", file=sys.stderr)
+        return EXIT_ERROR
+
+    # `--list-rules` reads the configuration first: which rules exist depends on
+    # `[tool.anti-slop].groups`, so the listing has to be the configured one.
     if args.list_rules:
-        print(_render_rule_list(CORE_RULES))
+        print(_render_rule_list(config.registry))
         return 0
 
     try:
-        config = load_config(registry=CORE_RULES, explicit_path=args.config)
         rules = _select_rules(config, args.rules)
         roots = resolve_roots(args.paths, config)
         files = collect_files(roots, config)
@@ -131,10 +141,10 @@ def _print_diagnostics(diagnostics: Sequence[Diagnostic], output_format: str) ->
 
 
 def _select_rules(config: Config, requested: Sequence[str] | None) -> tuple[Rule, ...]:
-    enabled = config.enabled_rules(CORE_RULES)
+    enabled = config.enabled_rules()
     if not requested:
         return enabled
-    known = {rule.id for rule in CORE_RULES}
+    known = {rule.id for rule in config.registry}
     unknown = sorted(set(requested) - known)
     if unknown:
         available = ", ".join(sorted(known)) or "<none>"
@@ -148,12 +158,18 @@ def _select_rules(config: Config, requested: Sequence[str] | None) -> tuple[Rule
 
 
 def _render_rule_list(rules: Sequence[Rule]) -> str:
+    """Core rules first, then each enabled group's rules, alphabetical within both."""
     lines: list[str] = []
-    for rule in sorted(rules, key=lambda rule: rule.id):
+    for rule in sorted(rules, key=_listing_key):
         lines.append(f"{rule.id}  {rule.description}")
         for spec in rule.options:
             lines.append(f"    {spec.name} (default: {_render_default(spec)})")
     return "\n".join(lines)
+
+
+def _listing_key(rule: Rule) -> tuple[str, str]:
+    """``("", id)`` for a core rule, ``(group, id)`` for a group rule."""
+    return (rule.id.rpartition("/")[0], rule.id)
 
 
 def _render_default(spec: BoolOption | StrListOption) -> str:

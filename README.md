@@ -22,11 +22,11 @@ for TypeScript) to Python semantics.
 
 ## Status
 
-All 15 core rules are implemented, with the full valid/invalid
-test matrix from section 3.6 and self-lint clean on this repository's own source. The
-opt-in `fastapi` contrib group (section 3.5) has not landed; `no-adhoc-isinstance` is
-turned off in this repository's own `pyproject.toml` for the reason recorded there —
-an AST analyzer's domain objects are themselves `ast` nodes, so `isinstance` over node
+All 15 core rules are implemented, with the full valid/invalid test matrix and
+self-lint clean on this repository's own source, plus the first opt-in contrib group
+(`fastapi`, 4 rules, off unless configured). `no-adhoc-isinstance` is turned off in
+this repository's own `pyproject.toml` for the reason recorded there — an AST
+analyzer's domain objects are themselves `ast` nodes, so `isinstance` over node
 classes here already is the recipe the rule prescribes, not the pattern it bans.
 
 ## Install into a repository (agent skill)
@@ -72,6 +72,7 @@ Configure in `pyproject.toml`:
 [tool.anti-slop]
 include = ["src", "tests"]
 exclude = [".venv/**", "tools/anti_slop/**"]
+# groups = ["fastapi"]   # opt-in rule groups; off unless listed here
 
 [tool.anti-slop.rules]
 no-object-parameters = { level = "error", allow-object = false }
@@ -124,6 +125,36 @@ without a rule id is a configuration error, not a silent blanket opt-out.
   (`# type: ignore`, `# ty: ignore[...]`, `# pyright: ignore[...]`) to carry an
   adjacent `# SAFETY: <invariant>` comment, and requires every suppression to name
   an error code.
+
+### Opt-in group: `fastapi`
+
+Framework policy stays out of the core. The `fastapi` group is off until a project
+asks for it, and it is meant for a repository with a **direct** FastAPI dependency:
+
+```toml
+[tool.anti-slop]
+groups = ["fastapi"]
+```
+
+Its rules carry the group prefix everywhere — in `[tool.anti-slop.rules]`, in the
+diagnostics, and in `# anti-slop: ignore[fastapi/...]` suppressions:
+
+- `fastapi/no-dict-body-parameters` — rejects a route body annotated `dict`/`Dict`/
+  `Mapping`/`Any`; parameters marked `Depends`/`Query`/`Header`/`Path`/`Cookie` are
+  not the body and are left alone.
+- `fastapi/no-untyped-route-response` — rejects a route handler with no return
+  annotation, or one returning `dict`/`Any`; `-> None` and `Response` types are valid.
+- `fastapi/no-raw-request-parsing` — rejects `request.json()`/`form()`/`body()` inside
+  a handler whose `request` parameter is annotated `Request`.
+- `fastapi/no-state-attribute-access` — rejects `app.state.x` / `request.app.state.x`
+  (and the `getattr`/`setattr`/`delattr` forms), anywhere in the module.
+
+Enabling the group also retargets one core rule: `no-module-mocking` keeps its problem
+statement but swaps its recipe for `app.dependency_overrides`, the seam FastAPI already
+provides. A function counts as a route handler only when its decorator base resolves,
+within the same module, to a `FastAPI(...)`/`APIRouter(...)` construction — a router
+imported from elsewhere, or a `.get` decorator belonging to another framework, is left
+alone rather than guessed at.
 
 ## Violation examples
 
@@ -278,6 +309,91 @@ from typing import cast
 user_id = cast(UserId, value)
 ```
 
+The four snippets below need `groups = ["fastapi"]` in `[tool.anti-slop]`; each was
+run through the linter with the full registry enabled and reports exactly its own
+rule.
+
+### `fastapi/no-dict-body-parameters`
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.post("/users")
+async def create_user(payload: dict) -> UserOut:
+    return store(payload)
+```
+
+Declare the body as a pydantic model instead — validation, the 422 response and the
+OpenAPI schema all follow from the annotation:
+
+```python
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+app = FastAPI()
+
+class UserIn(BaseModel):
+    email: str
+
+@app.post("/users")
+async def create_user(payload: UserIn) -> UserOut:
+    return store(payload)
+```
+
+### `fastapi/no-untyped-route-response`
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/users/{user_id}")
+async def read_user(user_id: int) -> dict[str, str]:
+    return load_user(user_id)
+```
+
+### `fastapi/no-raw-request-parsing`
+
+```python
+from fastapi import FastAPI, Request
+
+app = FastAPI()
+
+@app.post("/users")
+async def create_user(request: Request) -> UserOut:
+    payload = await request.json()
+    return UserOut(**payload)
+```
+
+### `fastapi/no-state-attribute-access`
+
+```python
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.on_event("startup")
+async def start() -> None:
+    app.state.engine = create_engine(DSN)
+```
+
+Hand the engine out through a dependency instead of a shared bag:
+
+```python
+from fastapi import Depends, FastAPI
+
+app = FastAPI()
+
+def get_engine() -> Engine:
+    return ENGINE
+
+@app.get("/users/{user_id}")
+async def read_user(user_id: int, engine: Engine = Depends(get_engine)) -> UserOut:
+    return await load_user(engine, user_id)
+```
+
 ## Coexistence with ruff and ty
 
 In a repository that also runs ruff and ty, anti-slop-py occupies a separate lane:
@@ -317,9 +433,8 @@ install report.
   were in tests already built around `mock.patch`/`monkeypatch.setattr` — hundreds of
   hits on a codebase adopting anti-slop after the fact. Turn it on with a migration
   plan to dependency injection, not as a same-day blocker. In FastAPI projects,
-  `app.dependency_overrides` is the native seam to migrate onto; the `fastapi`
-  contrib group is planned to reference that recipe directly
-  from `no-module-mocking`'s own message.
+  `app.dependency_overrides` is the native seam to migrate onto, and enabling the
+  `fastapi` group puts that recipe straight into `no-module-mocking`'s own message.
 - **`no-shape-in-symbol-names` and scientific/ML vocabulary.** The default term list
   is `["shape"]`. On the two field repositories this produced 11–14 hits each, all
   domain names in tests, resolved with per-line suppressions. Projects where `shape`,
@@ -328,9 +443,16 @@ install report.
 - **`no-string-attribute-access` and `app.state`.** One field repository (a 115k-line
   FastAPI service) produced 241 hits from `app.state.*`/`request.app.state.*` access
   alone — `state` is typed `object` by Starlette, so every read of it is a dynamic
-  attribute access by this rule's own definition. This is the concrete case the
-  planned `fastapi` contrib group's `no-state-attribute-access` rule (recipe:
-  `Depends`-based providers) is meant to replace with a more specific diagnostic.
+  attribute access by this rule's own definition. That is the case
+  `fastapi/no-state-attribute-access` exists for: enable the group and it answers with
+  the specific diagnostic (recipe: a `Depends`-based provider) instead of the generic
+  one, including for the plain `app.state.x` reads the core rule never sees at all.
+- **The `fastapi` group resolves routers lexically, within one module.** A handler
+  hung off a router imported from another module (`from .api import router`), off an
+  attribute chain (`@routers.v1.get(...)`), or off `@app.api_route(...)` is not
+  recognized as a route handler, so the group's first three rules stay silent on it.
+  There is no cross-module inference anywhere in this linter, and a group that guessed
+  would be wrong on every non-FastAPI object with a `.get` method.
 
 ## Output formats
 

@@ -8,6 +8,7 @@ Supported directives::
 
     # anti-slop: ignore[rule-id]            suppress on this line or the next line
     # anti-slop: ignore[rule-a, rule-b]     suppress several rules at once
+    # anti-slop: ignore[fastapi/rule-id]    an opt-in group rule, by its full id
     # anti-slop: skip-file                  skip the file (first 5 lines only)
 
 A suppression without a rule id is a configuration error, not a silent blanket
@@ -58,7 +59,13 @@ SKIP_FILE_MAX_LINE = 5
 _DIRECTIVE_RE = re.compile(r"anti-slop\s*:\s*(?P<body>[^#]*)")
 _IGNORE_RE = re.compile(r"^ignore\b\s*(?:\[(?P<ids>[^\]]*)\])?(?P<rest>.*)$")
 _SKIP_FILE_RE = re.compile(r"^skip-file\b(?P<rest>.*)$")
-_RULE_ID_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+# Kebab-case, with the optional `group/` prefix an opt-in contrib rule carries:
+# `# anti-slop: ignore[fastapi/no-state-attribute-access]`. Same grammar as
+# `engine/rule.py`'s id validation, so what a rule declares is what a suppression
+# may name.
+_RULE_ID_RE = re.compile(
+    r"(?:[a-z][a-z0-9]*(?:-[a-z0-9]+)*/)?[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
+)
 
 # The original's safety marker, kept upper-case and kept loose around the colon, so
 # that both the tight and the spaced spellings of it count. See the module docstring.

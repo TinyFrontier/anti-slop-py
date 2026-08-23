@@ -42,7 +42,13 @@ type OptionValue = bool | tuple[str, ...]
 # A handler receives the per-file, per-rule context and the node it subscribed to.
 type Handler = Callable[[RuleContext, ast.AST], None]
 
-_RULE_ID_PATTERN = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*")
+# A rule id is kebab-case, optionally prefixed by the opt-in group that owns it:
+# `no-object-parameters` (core), `fastapi/no-dict-body-parameters` (contrib group).
+# The prefix is part of the id everywhere -- configuration, diagnostics, and the
+# suppression directive alike -- so a group can never collide with a core rule.
+_RULE_ID_PATTERN = re.compile(
+    r"(?:[a-z][a-z0-9]*(?:-[a-z0-9]+)*/)?[a-z][a-z0-9]*(?:-[a-z0-9]+)*"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,7 +126,7 @@ class Rule:
 
     def __post_init__(self) -> None:
         if _RULE_ID_PATTERN.fullmatch(self.id) is None:
-            message = f"rule id {self.id!r} is not kebab-case"
+            message = f"rule id {self.id!r} is not kebab-case, or 'group/kebab-case'"
             raise ValueError(message)
         if not self.messages:
             message = f"rule {self.id!r} declares no messages"

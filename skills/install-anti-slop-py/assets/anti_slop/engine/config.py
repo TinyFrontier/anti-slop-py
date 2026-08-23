@@ -3,25 +3,40 @@
 Everything invalid is loud: an unknown rule id, an unknown option, a wrongly typed
 option or an unknown level is a configuration error (CLI exit code 2), never a
 silently ignored line.
+
+``groups`` is the one key that changes *which rules exist*. Each entry names a
+subpackage of :mod:`anti_slop.contrib` whose ``__init__`` exposes ``GROUP_RULES``
+(rules whose ids are prefixed with the group name) and ``CORE_MESSAGE_OVERRIDES``
+(replacement message templates for core rules, so a framework group can give a core
+rule its own recipe). Enabling a group appends its rules to the effective registry --
+:attr:`Config.registry` -- at ``error`` by default; leaving ``groups`` out reproduces
+the core-only behaviour exactly.
 """
 
 from __future__ import annotations
 
+import importlib
 import re
 import tomllib
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
+from typing import Protocol, cast
 
 from anti_slop.engine.rule import BoolOption, OptionValue, Rule, StrListOption
 
 __all__ = [
+    "CONTRIB_PACKAGE",
     "DEFAULT_EXCLUDE",
+    "KNOWN_GROUPS",
     "Config",
     "ConfigError",
+    "GroupModule",
     "PathFilter",
     "RuleSetting",
     "load_config",
+    "load_group",
+    "resolve_registry",
 ]
 
 # TOML values, as far as this tool needs to understand them.
@@ -33,7 +48,13 @@ LEVEL_ERROR = "error"
 LEVEL_OFF = "off"
 _LEVELS = (LEVEL_ERROR, LEVEL_OFF)
 
-_TOP_LEVEL_KEYS = frozenset({"include", "exclude", "rules"})
+_TOP_LEVEL_KEYS = frozenset({"groups", "include", "exclude", "rules"})
+
+# Where a group's subpackage lives, and the groups this distribution ships. The list
+# is explicit rather than a directory scan so that an unknown name fails with the
+# available groups spelled out, instead of with an import traceback.
+CONTRIB_PACKAGE = "anti_slop.contrib"
+KNOWN_GROUPS: tuple[str, ...] = ("fastapi",)
 
 DEFAULT_EXCLUDE: tuple[str, ...] = (
     "**/.git/**",
@@ -62,12 +83,28 @@ class RuleSetting:
     options: Mapping[str, OptionValue]
 
 
+class GroupModule(Protocol):
+    """What the ``__init__`` of an :mod:`anti_slop.contrib` group must expose.
+
+    ``GROUP_RULES`` holds the group's own rules, every id prefixed with the group
+    name (``fastapi/no-dict-body-parameters``). ``CORE_MESSAGE_OVERRIDES`` maps a
+    *core* rule id to the message ids it replaces, which is how a framework group
+    gives an existing rule a framework-specific recipe without forking the rule.
+    """
+
+    GROUP_RULES: tuple[Rule, ...]
+    CORE_MESSAGE_OVERRIDES: Mapping[str, Mapping[str, str]]
+
+
 @dataclass(frozen=True, slots=True)
 class Config:
     """Resolved configuration.
 
     ``root`` is the directory the configuration applies to (the directory holding
     ``pyproject.toml``, or the working directory when no configuration was found).
+    ``registry`` is the effective rule set -- the core rules, with any message
+    overrides the enabled ``groups`` applied, followed by the rules those groups
+    contribute. It is what the CLI runs and what ``--list-rules`` prints.
     """
 
     root: Path
@@ -75,11 +112,15 @@ class Config:
     include: tuple[str, ...]
     exclude: tuple[str, ...]
     rules: Mapping[str, RuleSetting]
+    groups: tuple[str, ...] = ()
+    registry: tuple[Rule, ...] = ()
 
-    def enabled_rules(self, registry: Sequence[Rule]) -> tuple[Rule, ...]:
+    def enabled_rules(self, registry: Sequence[Rule] | None = None) -> tuple[Rule, ...]:
+        """The enabled rules of ``registry``, or of this config's own registry."""
+        source = self.registry if registry is None else registry
         return tuple(
             rule
-            for rule in registry
+            for rule in source
             if rule.id in self.rules and self.rules[rule.id].enabled
         )
 
@@ -137,19 +178,109 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
 
 
 def default_config(root: Path, registry: Sequence[Rule]) -> Config:
-    """Every core rule at ``error`` with default options -- the zero-config baseline."""
+    """Every core rule at ``error`` with default options -- the zero-config baseline.
+
+    No configuration file means no ``groups``: opt-in rules are never on by default.
+    """
     return Config(
         root=root,
         source=None,
         include=(),
         exclude=DEFAULT_EXCLUDE,
-        rules={
-            rule.id: RuleSetting(
-                rule_id=rule.id, enabled=True, options=rule.default_options()
-            )
-            for rule in registry
-        },
+        rules=_default_settings(registry),
+        groups=(),
+        registry=tuple(registry),
     )
+
+
+def _default_settings(registry: Sequence[Rule]) -> dict[str, RuleSetting]:
+    return {
+        rule.id: RuleSetting(
+            rule_id=rule.id, enabled=True, options=rule.default_options()
+        )
+        for rule in registry
+    }
+
+
+def load_group(name: str, where: str) -> GroupModule:
+    """Import the contrib group ``name``; a name outside :data:`KNOWN_GROUPS` fails.
+
+    ``where`` is the configuration location quoted in the error message.
+    """
+    if name not in KNOWN_GROUPS:
+        available = ", ".join(KNOWN_GROUPS) or "<none>"
+        message = f"{where}: unknown group {name!r} (known groups: {available})"
+        raise ConfigError(message)
+    try:
+        module = importlib.import_module(f"{CONTRIB_PACKAGE}.{name}")
+    except ImportError as error:
+        message = f"{where}: group {name!r} cannot be imported: {error}"
+        raise ConfigError(message) from error
+    # SAFETY: every name in KNOWN_GROUPS is a subpackage shipped in this distribution
+    # whose __init__ declares GROUP_RULES and CORE_MESSAGE_OVERRIDES; the group tests
+    # import each one through this function and read both attributes, so a group that
+    # stopped declaring either would fail the suite rather than reach a user.
+    return cast("GroupModule", module)
+
+
+def resolve_registry(
+    core: Sequence[Rule], groups: Sequence[str], where: str
+) -> tuple[Rule, ...]:
+    """The effective rule set: ``core`` (with group overrides) plus the group rules.
+
+    Rules keep their declaration order -- core first, then each group in the order it
+    was configured -- so ``--list-rules`` shows the opt-in rules after the core ones.
+    A group rule whose id lacks its own group prefix, a duplicate id, and an override
+    naming a rule or a message that does not exist are all configuration errors: a
+    group that misdeclares itself must not half-load.
+    """
+    rules = list(core)
+    known = {rule.id for rule in core}
+    overrides: dict[str, dict[str, str]] = {}
+
+    for name in groups:
+        module = load_group(name, where)
+        prefix = f"{name}/"
+        for rule in module.GROUP_RULES:
+            if not rule.id.startswith(prefix):
+                message = (
+                    f"{where}: rule {rule.id!r} of group {name!r} is missing the"
+                    f" {prefix!r} id prefix"
+                )
+                raise ConfigError(message)
+            if rule.id in known:
+                message = f"{where}: group {name!r} redeclares rule {rule.id!r}"
+                raise ConfigError(message)
+            known.add(rule.id)
+            rules.append(rule)
+        for rule_id, messages in module.CORE_MESSAGE_OVERRIDES.items():
+            overrides.setdefault(rule_id, {}).update(messages)
+
+    unknown = sorted(set(overrides) - known)
+    if unknown:
+        message = (
+            f"{where}: group message override(s) for unknown rule(s):"
+            f" {', '.join(unknown)}"
+        )
+        raise ConfigError(message)
+    return tuple(_with_overrides(rule, overrides.get(rule.id), where) for rule in rules)
+
+
+def _with_overrides(
+    rule: Rule, messages: Mapping[str, str] | None, where: str
+) -> Rule:
+    """``rule`` with ``messages`` replacing the templates of the same message ids."""
+    if not messages:
+        return rule
+    unknown = sorted(set(messages) - set(rule.messages))
+    if unknown:
+        known = ", ".join(sorted(rule.messages))
+        message = (
+            f"{where}: message override(s) {', '.join(unknown)} do not exist on rule"
+            f" {rule.id!r} (its messages: {known})"
+        )
+        raise ConfigError(message)
+    return replace(rule, messages={**rule.messages, **messages})
 
 
 def find_pyproject(start: Path) -> Path | None:
@@ -222,10 +353,30 @@ def _load_from(path: Path, registry: Sequence[Rule]) -> Config:
         else _read_str_list(exclude_raw, path, f"[tool.{SECTION}].exclude")
     )
 
-    rules = _read_rules(section.get("rules"), path, registry)
+    groups = _read_groups(section.get("groups"), path)
+    effective = resolve_registry(registry, groups, str(path))
+    rules = _read_rules(section.get("rules"), path, effective)
     return Config(
-        root=root, source=path, include=include, exclude=exclude, rules=rules
+        root=root,
+        source=path,
+        include=include,
+        exclude=exclude,
+        rules=rules,
+        groups=groups,
+        registry=effective,
     )
+
+
+def _read_groups(value: TomlValue | None, path: Path) -> tuple[str, ...]:
+    """The ``groups`` array, rejecting a repeated entry as the mistake it is."""
+    names = _read_str_list(value, path, f"[tool.{SECTION}].groups")
+    seen: set[str] = set()
+    for name in names:
+        if name in seen:
+            message = f"{path}: [tool.{SECTION}].groups lists {name!r} twice"
+            raise ConfigError(message)
+        seen.add(name)
+    return names
 
 
 def _read_str_list(
@@ -249,12 +400,7 @@ def _read_rules(
     value: TomlValue | None, path: Path, registry: Sequence[Rule]
 ) -> dict[str, RuleSetting]:
     known = {rule.id: rule for rule in registry}
-    settings = {
-        rule.id: RuleSetting(
-            rule_id=rule.id, enabled=True, options=rule.default_options()
-        )
-        for rule in registry
-    }
+    settings = _default_settings(registry)
     if value is None:
         return settings
     if not isinstance(value, dict):
