@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+"""Canary benchmark: run anti-slop against pinned public-repo snapshots.
+
+Clones five well-known open-source repositories at exactly-pinned commits, lints
+each with the `recommended` preset through a throwaway configuration (the
+repository's own `pyproject.toml`, if any, is never read or touched), and writes
+a reproducible markdown table to `bench/RESULTS.md`.
+
+    .venv/bin/python scripts/canary_bench.py
+    .venv/bin/python scripts/canary_bench.py --out /tmp/results.md
+
+This is *not* a true/false-positive benchmark -- nobody has read the findings
+below and labelled them. It is a canary: a small, reproducible check that the
+linter runs to completion, produces stable output, and survives baseline
+generation/application on code nobody wrote to please it. Every field except
+runtime is deterministic across repeated runs on the same commit.
+
+Standard library only. Network access is used solely for `git clone`; the
+linter itself always runs as `.venv/bin/python -m anti_slop`, this project's own
+zero-dependency environment.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import tempfile
+import time
+from collections import Counter
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TypedDict
+
+__all__ = ["REPO_SPECS", "RepoResult", "RepoSpec", "main", "run_benchmark"]
+
+ROOT = Path(__file__).resolve().parent.parent
+PYTHON_BIN = ROOT / ".venv" / "bin" / "python"
+DEFAULT_OUT = ROOT / "bench" / "RESULTS.md"
+
+PRESET = "recommended"
+TOP_RULE_COUNT = 5
+SUBPROCESS_TIMEOUT_SECONDS = 600
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+
+
+class BenchError(Exception):
+    """A benchmark step failed in a way the caller must see, with repro steps."""
+
+
+class Finding(TypedDict):
+    """One entry of `anti-slop --format json` output (see FR-4 in the README)."""
+
+    path: str
+    line: int
+    col: int
+    endLine: int
+    endCol: int
+    rule: str
+    severity: str
+    message: str
+
+
+class LocProbeResult(TypedDict):
+    """Output of `_LOC_PROBE_SOURCE`: what the linter actually walked."""
+
+    files: int
+    loc: int
+
+
+@dataclass(frozen=True, slots=True)
+class RepoSpec:
+    """One pinned canary repository."""
+
+    category: str
+    slug: str
+    sha: str
+    reason: str
+
+    @property
+    def url(self) -> str:
+        return f"https://github.com/{self.slug}.git"
+
+    @property
+    def short_sha(self) -> str:
+        return self.sha[:12]
+
+
+# Five project shapes, each pinned to the commit that was `origin/HEAD` on the day
+# this benchmark was written (2026-08-23). Selection criteria: a live, well-known
+# project (not archived, pushed recently), roughly 10k-300k Python LOC once cloned,
+# and a license that permits cloning for a read-only, non-redistributed lint pass.
+REPO_SPECS: tuple[RepoSpec, ...] = (
+    RepoSpec(
+        category="FastAPI app",
+        slug="argilla-io/argilla",
+        sha="5338519accb13ae422f8bf9c0642651c249c49af",
+        reason=(
+            "Production FastAPI backend (argilla-server) for an AI dataset-"
+            "collaboration platform; ~133k Python LOC once cloned, Apache-2.0, "
+            "pushed within the last few days."
+        ),
+    ),
+    RepoSpec(
+        category="Django project",
+        slug="django-cms/django-cms",
+        sha="22f01b69b9bf49756e9e39b0cfe687f807053866",
+        reason=(
+            "Widely deployed Django content-management application (10k+ GitHub "
+            "stars); ~82k Python LOC once cloned, BSD-style license, actively "
+            "maintained. Chosen over django/django itself because the framework's "
+            "own repo (~525k LOC including its test suite) is far outside the "
+            "10k-300k band -- this benchmark wants a Django *project*, not the "
+            "framework."
+        ),
+    ),
+    RepoSpec(
+        category="Library",
+        slug="encode/httpx",
+        sha="b5addb64f0161ff6bfe94c124ef76f6a1fba5254",
+        reason=(
+            "Widely used sync/async HTTP client library with a small, idiomatic "
+            "core; ~18k Python LOC once cloned, BSD-3-Clause."
+        ),
+    ),
+    RepoSpec(
+        category="CLI tool",
+        slug="pypa/pipx",
+        sha="48c65abd14253140457b1abd40de4fc53e0f7edd",
+        reason=(
+            "Standard tool for installing Python CLI applications into isolated "
+            "environments, maintained under the PyPA org; ~31k Python LOC once "
+            "cloned (including its test suite, no vendored bulk), MIT."
+        ),
+    ),
+    RepoSpec(
+        category="Scientific/ML",
+        slug="huggingface/accelerate",
+        sha="fd01e35c83d8cc43b88cf0896007716fc5986558",
+        reason=(
+            "Hugging Face's library for device-agnostic PyTorch training loops; "
+            "~64k Python LOC once cloned, Apache-2.0. Chosen over tinygrad, whose "
+            "current HEAD carries ~150k lines of autogenerated ctypes bindings "
+            "under tinygrad/runtime/autogen/ and totals ~368k LOC -- outside the "
+            "10k-300k band this benchmark set for itself."
+        ),
+    ),
+)
+
+# Executed via `.venv/bin/python -c`: reuses the linter's own config loader and file
+# walk (`load_config` + `resolve_roots` + `collect_files`) so the LOC count is not an
+# approximation of what the linter scans -- it is the exact file list it scanned.
+_LOC_PROBE_SOURCE = """\
+import json
+import sys
+from pathlib import Path
+
+from anti_slop import CORE_RULES
+from anti_slop.engine.config import load_config
+from anti_slop.engine.runner import collect_files, resolve_roots
+
+config = load_config(registry=CORE_RULES, explicit_path=Path(sys.argv[1]))
+roots = resolve_roots([sys.argv[2]], config)
+files = collect_files(roots, config)
+total_lines = 0
+for path in files:
+    try:
+        total_lines += len(path.read_text(encoding="utf-8", errors="replace").splitlines())
+    except OSError:
+        continue
+print(json.dumps({"files": len(files), "loc": total_lines}))
+"""
+
+_DISCLAIMER = (
+    "> **findings ≠ defects.** The counts below are how many times the "
+    f"`{PRESET}` preset's rules fired at their unconfigured defaults on a public "
+    "snapshot -- not a quality assessment of the listed projects. No manual "
+    "true/false-positive review was performed (that is a later, separate "
+    "benchmark); read every number as \"a policy rule fired this many times\", "
+    "never as \"this many bugs\"."
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RepoResult:
+    """Everything the report table needs for one repository."""
+
+    spec: RepoSpec
+    files: int
+    loc: int
+    runtime_seconds: float
+    total_findings: int
+    rule_counts: tuple[tuple[str, int], ...]
+    baseline_verify_exit_code: int
+
+    @property
+    def top_rules(self) -> tuple[tuple[str, int], ...]:
+        return self.rule_counts[:TOP_RULE_COUNT]
+
+
+def _run(command: Sequence[str], *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(
+            list(command),
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=SUBPROCESS_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        message = f"command not found: {command[0]} ({error})"
+        raise BenchError(message) from error
+    except subprocess.TimeoutExpired as error:
+        message = f"timed out after {SUBPROCESS_TIMEOUT_SECONDS}s: {' '.join(command)}"
+        raise BenchError(message) from error
+
+
+def clone_pinned(spec: RepoSpec, destination: Path) -> None:
+    """Clone exactly `spec.sha` into `destination`, history-free.
+
+    `git init` + `git remote add` + `git fetch --depth 1 origin <sha>` + `git
+    checkout FETCH_HEAD` -- this works against GitHub because it allows fetching
+    any reachable commit by SHA, not just ref tips.
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    steps: tuple[tuple[str, ...], ...] = (
+        ("git", "init", "-q", "."),
+        ("git", "remote", "add", "origin", spec.url),
+        ("git", "fetch", "--depth", "1", "-q", "origin", spec.sha),
+        ("git", "checkout", "-q", "FETCH_HEAD"),
+    )
+    executed: list[str] = []
+    for step in steps:
+        executed.append(" ".join(step))
+        result = _run(step, cwd=destination)
+        if result.returncode != 0:
+            reproduce = "\n".join(f"  {line}" for line in executed)
+            message = (
+                f"{spec.slug}: `{' '.join(step)}` failed (exit {result.returncode}).\n"
+                f"stderr:\n{result.stderr.strip()}\n"
+                f"Reproduce in an empty directory:\n{reproduce}\n"
+                "This usually means the network is unreachable, GitHub is down, or "
+                f"the pinned commit {spec.sha} is no longer reachable (force-pushed "
+                "away, or the repository was renamed/deleted/made private)."
+            )
+            raise BenchError(message)
+
+
+def write_config(path: Path) -> None:
+    """A throwaway `[tool.anti-slop]` pointed only at the `recommended` preset."""
+    path.write_text(f'[tool.anti-slop]\npreset = "{PRESET}"\n', encoding="utf-8")
+
+
+def lint_json(config_path: Path, target: Path) -> tuple[list[Finding], float]:
+    """Run the linter once, `--format json`, and time the wall-clock cost."""
+    command = (
+        str(PYTHON_BIN),
+        "-m",
+        "anti_slop",
+        "--config",
+        str(config_path),
+        "--format",
+        "json",
+        str(target),
+    )
+    started = time.perf_counter()
+    result = _run(command)
+    elapsed = time.perf_counter() - started
+    if result.returncode not in (0, 1):
+        message = (
+            f"lint run crashed (exit {result.returncode}): {' '.join(command)}\n"
+            f"stderr:\n{result.stderr.strip()}"
+        )
+        raise BenchError(message)
+    try:
+        findings: list[Finding] = json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        message = (
+            f"lint run did not produce valid JSON: {' '.join(command)}\n"
+            f"stdout (first 500 chars): {result.stdout[:500]!r}\n{error}"
+        )
+        raise BenchError(message) from error
+    return findings, elapsed
+
+
+def generate_baseline(config_path: Path, baseline_path: Path, target: Path) -> None:
+    command = (
+        str(PYTHON_BIN),
+        "-m",
+        "anti_slop",
+        "--config",
+        str(config_path),
+        "--baseline",
+        str(baseline_path),
+        "--generate-baseline",
+        str(target),
+    )
+    result = _run(command)
+    if result.returncode != 0:
+        message = (
+            f"--generate-baseline failed (exit {result.returncode}): "
+            f"{' '.join(command)}\nstderr:\n{result.stderr.strip()}"
+        )
+        raise BenchError(message)
+
+
+def verify_baseline(config_path: Path, baseline_path: Path, target: Path) -> int:
+    """Re-run with the just-written baseline applied; the gate is exit 0."""
+    command = (
+        str(PYTHON_BIN),
+        "-m",
+        "anti_slop",
+        "--config",
+        str(config_path),
+        "--baseline",
+        str(baseline_path),
+        "--format",
+        "json",
+        str(target),
+    )
+    result = _run(command)
+    return result.returncode
+
+
+def measure_loc(config_path: Path, target: Path) -> tuple[int, int]:
+    """Files and total lines the linter actually collected for `target`."""
+    command = (str(PYTHON_BIN), "-c", _LOC_PROBE_SOURCE, str(config_path), str(target))
+    result = _run(command)
+    if result.returncode != 0:
+        message = (
+            f"LOC probe failed (exit {result.returncode}) for {target}\n"
+            f"stderr:\n{result.stderr.strip()}"
+        )
+        raise BenchError(message)
+    payload: LocProbeResult = json.loads(result.stdout)
+    return payload["files"], payload["loc"]
+
+
+def bench_one(spec: RepoSpec) -> RepoResult:
+    """Clone, lint, measure and baseline-round-trip one pinned repository."""
+    with tempfile.TemporaryDirectory(prefix="canary-bench-") as raw_tmp:
+        tmp_dir = Path(raw_tmp)
+        repo_dir = tmp_dir / "repo"
+        config_path = tmp_dir / "pyproject.toml"
+        baseline_path = tmp_dir / "baseline.json"
+
+        clone_pinned(spec, repo_dir)
+        write_config(config_path)
+
+        findings, elapsed = lint_json(config_path, repo_dir)
+        files, loc = measure_loc(config_path, repo_dir)
+
+        counts = Counter(finding["rule"] for finding in findings)
+        rule_counts = tuple(
+            sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+        )
+
+        generate_baseline(config_path, baseline_path, repo_dir)
+        verify_exit_code = verify_baseline(config_path, baseline_path, repo_dir)
+
+        return RepoResult(
+            spec=spec,
+            files=files,
+            loc=loc,
+            runtime_seconds=elapsed,
+            total_findings=len(findings),
+            rule_counts=rule_counts,
+            baseline_verify_exit_code=verify_exit_code,
+        )
+
+
+def run_benchmark(specs: Sequence[RepoSpec] = REPO_SPECS) -> list[RepoResult]:
+    results: list[RepoResult] = []
+    for spec in specs:
+        print(f"[{spec.category}] {spec.slug} @ {spec.short_sha} ...", file=sys.stderr)
+        result = bench_one(spec)
+        print(
+            f"  -> {result.loc} LOC / {result.files} files, "
+            f"{result.total_findings} findings, {result.runtime_seconds:.1f}s, "
+            f"baseline verify exit={result.baseline_verify_exit_code}",
+            file=sys.stderr,
+        )
+        results.append(result)
+    return results
+
+
+def render_table(results: Sequence[RepoResult]) -> str:
+    header = (
+        "| Category | Repository | SHA | Python LOC | Files | "
+        "Runtime (s) -- informational | Preset | Total findings | "
+        "Top rules (rule: count) | Baseline verify exit |\n"
+        "|---|---|---|---:|---:|---:|---|---:|---|---:|\n"
+    )
+    rows: list[str] = []
+    for result in results:
+        spec = result.spec
+        top = ", ".join(f"`{rule}`: {count}" for rule, count in result.top_rules)
+        rows.append(
+            "| {category} | [{slug}](https://github.com/{slug}) | `{sha}` | "
+            "{loc} | {files} | {runtime:.1f} | {preset} | {total} | {top} | "
+            "{verify} |".format(
+                category=spec.category,
+                slug=spec.slug,
+                sha=spec.short_sha,
+                loc=result.loc,
+                files=result.files,
+                runtime=result.runtime_seconds,
+                preset=PRESET,
+                total=result.total_findings,
+                top=top or "--",
+                verify=result.baseline_verify_exit_code,
+            )
+        )
+    return header + "\n".join(rows) + "\n"
+
+
+def render_report(results: Sequence[RepoResult]) -> str:
+    lines: list[str] = [
+        "# Canary benchmark",
+        "",
+        "Reproducible run of `anti-slop`'s `recommended` preset against five pinned "
+        "snapshots of public OSS repositories. This is a canary, not a labelled "
+        "benchmark: nobody has reviewed the findings for true/false positives. "
+        "Regenerate with:",
+        "",
+        "```bash",
+        ".venv/bin/python scripts/canary_bench.py",
+        "```",
+        "",
+        _DISCLAIMER,
+        "",
+        render_table(results).rstrip("\n"),
+        "",
+        "## Repositories",
+        "",
+    ]
+    for result in results:
+        spec = result.spec
+        lines.append(
+            f"- **{spec.category}** -- "
+            f"[`{spec.slug}`](https://github.com/{spec.slug}) @ `{spec.sha}`: "
+            f"{spec.reason}"
+        )
+    lines.extend(
+        [
+            "",
+            "## Method",
+            "",
+            "Each repository is cloned into a fresh temporary directory at exactly "
+            "the pinned commit -- `git init` + `git remote add` + `git fetch "
+            "--depth 1 origin <sha>` + `git checkout FETCH_HEAD`, no history. The "
+            "linter reads a throwaway `pyproject.toml` "
+            f'(`[tool.anti-slop]` / `preset = "{PRESET}"`) written next to the '
+            "checkout, never the repository's own configuration. `Python LOC` and "
+            "`Files` come from the linter's own file walk (`resolve_roots` + "
+            "`collect_files`), not an independent approximation. "
+            "`--generate-baseline` then a second run with `--baseline` applied "
+            "must exit 0 on every repository -- that round trip, and every field "
+            "above except runtime, is deterministic across repeated runs on the "
+            "same SHA.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="canary_bench",
+        description=(
+            "Run anti-slop against pinned public-repo snapshots and publish "
+            "bench/RESULTS.md."
+        ),
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=DEFAULT_OUT,
+        metavar="PATH",
+        help="markdown table output path (default: bench/RESULTS.md)",
+    )
+    args = parser.parse_args(argv)
+
+    if not PYTHON_BIN.is_file():
+        print(
+            f"canary_bench: {PYTHON_BIN} not found -- create the venv first "
+            "(see README's Development section: uv venv + uv pip install -e . "
+            "--group dev).",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+
+    try:
+        results = run_benchmark()
+    except BenchError as error:
+        print(f"canary_bench: {error}", file=sys.stderr)
+        return EXIT_ERROR
+
+    out_path: Path = args.out
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(render_report(results), encoding="utf-8")
+    print(f"wrote {out_path}", file=sys.stderr)
+    return EXIT_OK
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

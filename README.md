@@ -831,6 +831,18 @@ Configuration is still `[tool.anti-slop]` in the target repository's own
 run from this repository exercises the hook manifest directly, both on a clean
 file (passes) and on a fixture violation (fails with the diagnostic on stdout).
 
+## Canary benchmark
+
+`scripts/canary_bench.py` runs the `recommended` preset against five pinned public
+repositories (a FastAPI app, a Django project, a library, a CLI tool, a
+scientific/ML library) and publishes a reproducible findings table to
+[`bench/RESULTS.md`](bench/RESULTS.md) — LOC, runtime, findings by rule, and a
+`--generate-baseline` + `--baseline` round trip that must exit 0 on every
+repository. It is a canary, not a labelled benchmark: nobody has reviewed the
+findings for true/false positives, so read the counts as "a policy rule fired
+this many times", never as "this many bugs" — see the table's own header for the
+full disclaimer. Regenerate with `.venv/bin/python scripts/canary_bench.py`.
+
 ## Development
 
 ```bash
