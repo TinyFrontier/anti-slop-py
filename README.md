@@ -18,6 +18,11 @@ and adjusted to the team's standards, not depended upon.
 > **anti-slop catches the moment an agent silences the checker without adding
 > evidence.**
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/pipeline-dark.png">
+  <img alt="How a diff becomes a review: an uncommitted change is narrowed to its diff, checked by 15 rules that carry tier and confidence, mapped to error/warn/off by a preset, filtered against the committed baseline, and reported as a review grouped by confidence — with pyproject.toml and .anti-slop-baseline.json feeding the pipeline as configuration. Ruff owns style, ty owns types, anti-slop owns evidence." src="docs/pipeline.png" width="968">
+</picture>
+
 Analysis is purely syntactic — stdlib `ast` and `tokenize`, no type checker in the
 loop, no external dependency, no installation. Semantics beyond raw syntax come from
 a local scope table (lexical name and import resolution, alias chains) built once per
