@@ -21,7 +21,7 @@ import tomllib
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 
 from anti_slop.engine.rule import BoolOption, OptionValue, Rule, StrListOption
 
@@ -45,8 +45,9 @@ type TomlValue = str | int | float | bool | list[TomlValue] | dict[str, TomlValu
 SECTION = "anti-slop"
 
 LEVEL_ERROR = "error"
+LEVEL_WARN = "warn"
 LEVEL_OFF = "off"
-_LEVELS = (LEVEL_ERROR, LEVEL_OFF)
+_LEVELS = (LEVEL_ERROR, LEVEL_WARN, LEVEL_OFF)
 
 _TOP_LEVEL_KEYS = frozenset({"groups", "include", "exclude", "rules"})
 
@@ -76,11 +77,18 @@ class ConfigError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class RuleSetting:
-    """The resolved configuration of one rule: on/off plus fully defaulted options."""
+    """The resolved configuration of one rule: on/off plus fully defaulted options.
+
+    ``severity`` distinguishes ``error`` from ``warn`` for an *enabled* rule; ``off``
+    is not a severity, it is ``enabled=False``. Defaults to ``"error"`` so every
+    existing construction of a ``RuleSetting`` -- test harnesses included -- keeps
+    its prior meaning without naming the field.
+    """
 
     rule_id: str
     enabled: bool
     options: Mapping[str, OptionValue]
+    severity: Literal["error", "warn"] = "error"
 
 
 class GroupModule(Protocol):
@@ -426,7 +434,12 @@ def _read_rule_setting(rule: Rule, raw: TomlValue, path: Path) -> RuleSetting:
 
     if isinstance(raw, str):
         level = _read_level(raw, path, where)
-        return RuleSetting(rule_id=rule.id, enabled=level == LEVEL_ERROR, options=options)
+        return RuleSetting(
+            rule_id=rule.id,
+            enabled=level != LEVEL_OFF,
+            options=options,
+            severity=_severity_of(level),
+        )
 
     if not isinstance(raw, dict):
         levels = " | ".join(repr(level) for level in _LEVELS)
@@ -453,7 +466,12 @@ def _read_rule_setting(rule: Rule, raw: TomlValue, path: Path) -> RuleSetting:
             raise ConfigError(message)
         options[key] = _read_option(spec, entry, path, f"{where}.{key}")
 
-    return RuleSetting(rule_id=rule.id, enabled=level == LEVEL_ERROR, options=options)
+    return RuleSetting(
+        rule_id=rule.id,
+        enabled=level != LEVEL_OFF,
+        options=options,
+        severity=_severity_of(level),
+    )
 
 
 def _read_level(value: str, path: Path, where: str) -> str:
@@ -462,6 +480,11 @@ def _read_level(value: str, path: Path, where: str) -> str:
         message = f"{path}: {where} must be one of {levels}, got {value!r}"
         raise ConfigError(message)
     return value
+
+
+def _severity_of(level: str) -> Literal["error", "warn"]:
+    """``level`` as a ``RuleSetting.severity``; irrelevant (defaults to error) for off."""
+    return "warn" if level == LEVEL_WARN else "error"
 
 
 def _read_option(

@@ -26,6 +26,18 @@ SUPPRESSED = """
         ...
 """
 
+MIXED_VIOLATIONS = """
+    from typing import Any
+
+
+    def save(value: object) -> None:
+        ...
+
+
+    def handle(value: Any) -> None:
+        ...
+"""
+
 
 def make_project(tmp_path: Path, module_body: str, config: str = "") -> tuple[Path, Path]:
     (tmp_path / "pyproject.toml").write_text(
@@ -67,6 +79,56 @@ def test_suppressed_violation_exits_zero(
     code = main([str(module), "--config", str(config)])
     capsys.readouterr()
     assert code == 0
+
+
+def test_warn_only_run_exits_zero_with_the_warning_marker(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config, module = make_project(
+        tmp_path,
+        VIOLATION,
+        f"""
+        [tool.anti-slop.rules]
+        "{RULE_ID}" = "warn"
+        """,
+    )
+    code = main([str(module), "--config", str(config)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert f"{module}:1:10 {RULE_ID} warning:" in captured.out
+
+
+def test_mixed_warn_and_error_diagnostics_exits_one(tmp_path: Path) -> None:
+    config, module = make_project(
+        tmp_path,
+        MIXED_VIOLATIONS,
+        f"""
+        [tool.anti-slop.rules]
+        "{RULE_ID}" = "warn"
+        """,
+    )
+    # no-any-parameters keeps its default "error" severity, so the run still fails
+    # even though the no-object-parameters diagnostic is only a warning.
+    assert main([str(module), "--config", str(config)]) == 1
+
+
+def test_suppressed_warn_diagnostic_exits_zero_with_no_output(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config, module = make_project(
+        tmp_path,
+        SUPPRESSED,
+        f"""
+        [tool.anti-slop.rules]
+        "{RULE_ID}" = "warn"
+        """,
+    )
+    code = main([str(module), "--config", str(config)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert captured.out == ""
 
 
 def test_rule_turned_off_in_config_exits_zero(tmp_path: Path) -> None:

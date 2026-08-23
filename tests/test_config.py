@@ -56,6 +56,35 @@ def test_level_error_and_off(tmp_path: Path) -> None:
     assert RULE_ID not in {rule.id for rule in disabled.enabled_rules(CORE_RULES)}
 
 
+def test_level_warn_is_enabled_with_warn_severity(tmp_path: Path) -> None:
+    config = load(tmp_path, f"""
+        [tool.anti-slop.rules]
+        "{RULE_ID}" = "warn"
+    """)
+    setting = config.rules[RULE_ID]
+    assert setting.enabled is True
+    assert setting.severity == "warn"
+
+
+def test_table_form_warn_level_carries_severity(tmp_path: Path) -> None:
+    config = load(tmp_path, f"""
+        [tool.anti-slop.rules]
+        "{RULE_ID}" = {{ level = "warn", allow-object = true }}
+    """)
+    setting = config.rules[RULE_ID]
+    assert setting.enabled is True
+    assert setting.severity == "warn"
+    assert setting.options["allow-object"] is True
+
+
+def test_default_severity_is_error(tmp_path: Path) -> None:
+    config = load(tmp_path, """
+        [project]
+        name = "demo"
+    """)
+    assert config.rules[RULE_ID].severity == "error"
+
+
 def test_table_form_carries_level_and_options(tmp_path: Path) -> None:
     config = load(tmp_path, f"""
         [tool.anti-slop.rules]
@@ -114,7 +143,7 @@ def test_unknown_level_is_a_config_error(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="must be one of"):
         load(tmp_path, f"""
             [tool.anti-slop.rules]
-            "{RULE_ID}" = "warn"
+            "{RULE_ID}" = "critical"
         """)
 
 

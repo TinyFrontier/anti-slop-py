@@ -53,7 +53,12 @@ _RULE_ID_PATTERN = re.compile(
 
 @dataclass(frozen=True, slots=True)
 class Diagnostic:
-    """One reported violation. Columns are 1-based, matching editor conventions."""
+    """One reported violation. Columns are 1-based, matching editor conventions.
+
+    ``severity`` mirrors the ``RuleSetting`` the rule ran under: ``"error"`` or
+    ``"warn"``. It defaults to ``"error"`` and sits last so every prior positional
+    or keyword construction of a ``Diagnostic`` keeps working unchanged.
+    """
 
     path: Path
     line: int
@@ -62,6 +67,7 @@ class Diagnostic:
     end_col: int
     rule_id: str
     message: str
+    severity: str = "error"
 
     @property
     def sort_key(self) -> tuple[str, int, int, str]:

@@ -71,11 +71,14 @@ def test_json_format_reports_the_exact_fr4_keys(
     assert isinstance(payload, list)
     assert len(payload) == 1
     (entry,) = payload
-    assert set(entry) == {"path", "line", "col", "endLine", "endCol", "rule", "message"}
+    assert set(entry) == {
+        "path", "line", "col", "endLine", "endCol", "rule", "severity", "message",
+    }
     assert entry["path"] == str(module)
     assert entry["line"] == 1
     assert entry["col"] == 10
     assert entry["rule"] == "no-object-parameters"
+    assert entry["severity"] == "error"
     assert "domain type" in entry["message"]
     # A single JSON document on stdout: exactly one line, no trailing chatter.
     assert captured.out.count("\n") == 1
@@ -118,6 +121,51 @@ def test_json_format_is_sorted_by_path_then_line_then_col(tmp_path: Path) -> Non
     assert [entry["line"] for entry in b_mod_entries] == sorted(
         entry["line"] for entry in b_mod_entries
     )
+
+
+# --------------------------------------------------------------------------- #
+# severity: warn vs error, across every format
+# --------------------------------------------------------------------------- #
+
+
+def _diagnostic(severity: str) -> Diagnostic:
+    return Diagnostic(
+        path=Path("mod.py"),
+        line=1,
+        col=10,
+        end_line=1,
+        end_col=15,
+        rule_id="no-object-parameters",
+        message="use a domain type instead",
+        severity=severity,
+    )
+
+
+def test_format_text_error_diagnostic_has_no_marker() -> None:
+    rendered = runner.format_text((_diagnostic("error"),))
+    assert rendered == "mod.py:1:10 no-object-parameters use a domain type instead"
+
+
+def test_format_text_warn_diagnostic_gets_warning_marker() -> None:
+    rendered = runner.format_text((_diagnostic("warn"),))
+    assert rendered == (
+        "mod.py:1:10 no-object-parameters warning: use a domain type instead"
+    )
+
+
+def test_json_format_carries_severity_for_both_levels() -> None:
+    payload = json.loads(runner.format_json((_diagnostic("error"), _diagnostic("warn"))))
+    assert [entry["severity"] for entry in payload] == ["error", "warn"]
+
+
+def test_github_format_uses_warning_command_for_warn_severity() -> None:
+    rendered = runner.format_github((_diagnostic("warn"),))
+    assert rendered.startswith("::warning file=")
+
+
+def test_github_format_uses_error_command_for_error_severity() -> None:
+    rendered = runner.format_github((_diagnostic("error"),))
+    assert rendered.startswith("::error file=")
 
 
 # --------------------------------------------------------------------------- #

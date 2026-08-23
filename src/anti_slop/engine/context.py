@@ -29,6 +29,7 @@ class RuleContext:
         "_path",
         "_report",
         "_rule",
+        "_severity",
         "_source",
     )
 
@@ -43,6 +44,7 @@ class RuleContext:
         rule: Rule,
         options: Mapping[str, OptionValue],
         report: Callable[[Diagnostic], None],
+        severity: str = "error",
     ) -> None:
         self._path = path
         self._source = source
@@ -52,6 +54,7 @@ class RuleContext:
         self._rule = rule
         self._options = options
         self._report = report
+        self._severity = severity
 
     @property
     def path(self) -> Path:
@@ -132,6 +135,7 @@ class RuleContext:
                 end_col=end_col_offset + 1,
                 rule_id=self._rule.id,
                 message=template.format(**params),
+                severity=self._severity,
             )
         )
 

@@ -62,7 +62,7 @@ class RunOutcome:
     def exit_code(self) -> int:
         if self.failures:
             return EXIT_ERROR
-        if self.diagnostics:
+        if any(diagnostic.severity == "error" for diagnostic in self.diagnostics):
             return EXIT_VIOLATIONS
         return EXIT_OK
 
@@ -113,6 +113,7 @@ def check_source(
             rule=rule,
             options=setting.options,
             report=collected.append,
+            severity=setting.severity,
         )
         walker.subscribe(context, rule.handlers)
 
@@ -298,12 +299,20 @@ def run(
 
 
 def format_text(diagnostics: Sequence[Diagnostic]) -> str:
-    """``path:line:col rule-id message`` -- one diagnostic per line."""
-    return "\n".join(
-        f"{diagnostic.path}:{diagnostic.line}:{diagnostic.col}"
-        f" {diagnostic.rule_id} {diagnostic.message}"
-        for diagnostic in diagnostics
-    )
+    """``path:line:col rule-id message`` -- one diagnostic per line.
+
+    A ``warn``-severity diagnostic gets a ``warning: `` marker ahead of the
+    message; an ``error`` diagnostic's line is unchanged from before severities
+    existed, so this stays a silent no-op for every all-error run.
+    """
+    lines = []
+    for diagnostic in diagnostics:
+        marker = "warning: " if diagnostic.severity == "warn" else ""
+        lines.append(
+            f"{diagnostic.path}:{diagnostic.line}:{diagnostic.col}"
+            f" {diagnostic.rule_id} {marker}{diagnostic.message}"
+        )
+    return "\n".join(lines)
 
 
 def format_json(diagnostics: Sequence[Diagnostic]) -> str:
@@ -321,6 +330,7 @@ def format_json(diagnostics: Sequence[Diagnostic]) -> str:
             "endLine": diagnostic.end_line,
             "endCol": diagnostic.end_col,
             "rule": diagnostic.rule_id,
+            "severity": diagnostic.severity,
             "message": diagnostic.message,
         }
         for diagnostic in diagnostics
@@ -345,19 +355,22 @@ def _escape_workflow_property(value: str) -> str:
 
 
 def format_github(diagnostics: Sequence[Diagnostic]) -> str:
-    """GitHub Actions ``::error`` annotations, one workflow command per diagnostic.
+    """GitHub Actions ``::error``/``::warning`` annotations, one per diagnostic.
 
-    Field order and names follow ``actions/toolkit``'s ``error`` command; escaping
-    follows its documented ``%``/CR/LF (and ``:``/``,`` for properties) rules so a
-    path or message containing those characters cannot corrupt the command line.
+    Field order and names follow ``actions/toolkit``'s ``error``/``warning``
+    commands; escaping follows its documented ``%``/CR/LF (and ``:``/``,`` for
+    properties) rules so a path or message containing those characters cannot
+    corrupt the command line. A ``warn``-severity diagnostic emits ``::warning``
+    instead of ``::error``; every other field is unchanged.
     """
     lines = []
     for diagnostic in diagnostics:
+        command = "warning" if diagnostic.severity == "warn" else "error"
         file_field = _escape_workflow_property(str(diagnostic.path))
         title_field = _escape_workflow_property(diagnostic.rule_id)
         message_field = _escape_workflow_data(diagnostic.message)
         lines.append(
-            f"::error file={file_field},line={diagnostic.line},col={diagnostic.col},"
+            f"::{command} file={file_field},line={diagnostic.line},col={diagnostic.col},"
             f"endLine={diagnostic.end_line},endColumn={diagnostic.end_col},"
             f"title={title_field}::{message_field}"
         )
