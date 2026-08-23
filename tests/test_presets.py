@@ -45,6 +45,8 @@ def levels(config: Config) -> dict[str, str]:
         ("recommended", "error", "error", "warn"),
         ("minimal", "error", "off", "off"),
         ("legacy", "warn", "warn", "off"),
+        ("agent", "error", "error", "warn"),
+        ("agent-strict", "error", "error", "error"),
     ],
 )
 def test_each_preset_sets_the_documented_levels(
@@ -246,6 +248,38 @@ def test_a_preset_changes_what_a_run_does(tmp_path: Path) -> None:
 def test_preset_names_are_unique_and_documented() -> None:
     names = [preset.name for preset in PRESETS]
 
-    assert names == ["strict", "recommended", "minimal", "legacy"]
+    assert names == [
+        "strict",
+        "recommended",
+        "minimal",
+        "legacy",
+        "agent",
+        "agent-strict",
+    ]
     assert len(set(names)) == len(names)
     assert all(preset.summary.strip() for preset in PRESETS)
+
+
+def test_a_confidence_cap_only_relaxes_what_the_tier_decided(tmp_path: Path) -> None:
+    """`agent` differs from `strict` only where confidence says a finding is policy."""
+    config = load(tmp_path, """
+        [tool.anti-slop]
+        preset = "agent"
+    """)
+    resolved = levels(config)
+
+    by_confidence = {
+        rule.id: rule.metadata.confidence for rule in CORE_RULES
+    }
+    for rule_id, level in resolved.items():
+        expected = "warn" if by_confidence[rule_id] == "policy" else "error"
+        assert level == expected
+
+
+def test_agent_strict_raises_the_policy_tier_back_to_error(tmp_path: Path) -> None:
+    config = load(tmp_path, """
+        [tool.anti-slop]
+        preset = "agent-strict"
+    """)
+
+    assert set(levels(config).values()) == {"error"}

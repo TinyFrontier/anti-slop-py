@@ -146,6 +146,28 @@ layout and tooling.
    With no path arguments the linter checks `[tool.anti-slop].include`. Exit codes: `0`
    clean, `1` violations, `2` configuration or usage error.
 
+   On a repository where coding agents open branches or pull requests, add a second,
+   diff-scoped gate for those changes:
+
+   ```yaml
+   # a job that runs on pull requests; needs the base branch fetched
+   - uses: actions/checkout@v4
+     with:
+       fetch-depth: 0
+   - name: anti-slop review
+     run: python tools/anti_slop review --base origin/${{ github.base_ref }}
+   ```
+
+   `review` reports only the findings on the lines the change touched, grouped by
+   confidence, each with the reason the rule exists and the recipe that replaces it —
+   which is what makes its output directly actionable by the agent that opened the
+   branch. It runs under the `agent` preset by default (high and medium confidence
+   block, architectural policy reports), so it stays useful on a repository whose full
+   run is not clean yet, and `[tool.anti-slop.rules]` still overrides it per rule.
+   Use `--preset agent-strict` once the team has accepted the architectural tier.
+   Keep the full run as well: `review` answers "did this change add anything?", not
+   "is this repository clean?".
+
 5. Check for Ruff. If the repository configures it (`[tool.ruff]`, `ruff.toml`, or a ruff
    pre-commit hook), disable the four rules anti-slop-py supersedes, and record the change
    in the final report:
@@ -225,6 +247,13 @@ layout and tooling.
    middle ground: set the architectural rules (see the README's "Opinionated by design"
    section) to `"warn"` so they report without failing the run, keep the escape-hatch
    rules at `"error"`, and record the plan for promoting warns to errors in the report.
+   `preset = "recommended"` is that split in one line, and `preset = "legacy"` is the
+   step before it when nothing can block yet; a baseline
+   (`python tools/anti_slop --generate-baseline`) is the other way, keeping every rule
+   at `"error"` while today's findings stay hidden until the lines they sit on change.
+   Whichever of the three the repository takes, the `review` gate from step 4 stays at
+   full strength: it only ever looks at lines a change touched, so pre-existing
+   findings never reach it.
 
 8. Review the final diff and report:
    - the vendored path and how to run it,

@@ -13,6 +13,11 @@ parse at the I/O boundary, name the domain type, inject a real seam — not mere
 that something is forbidden. It is meant to be **vendored** into a repository, read,
 and adjusted to the team's standards, not depended upon.
 
+> Ruff finds Python problems.
+> Type checkers find type problems.
+> **anti-slop catches the moment an agent silences the checker without adding
+> evidence.**
+
 Analysis is purely syntactic — stdlib `ast` and `tokenize`, no type checker in the
 loop, no external dependency, no installation. Semantics beyond raw syntax come from
 a local scope table (lexical name and import resolution, alias chains) built once per
@@ -27,7 +32,8 @@ for TypeScript) to Python semantics.
 All 15 core rules are implemented, with the full valid/invalid test matrix and
 self-lint clean on this repository's own source, plus the first opt-in contrib group
 (`fastapi`, 4 rules, off unless configured). Adoption tooling is in place: presets,
-a findings baseline, and diff-scoped runs. `no-adhoc-isinstance` is turned off in
+a findings baseline, diff-scoped runs, and the `review` subcommand that composes
+them into a report on one change. `no-adhoc-isinstance` is turned off in
 this repository's own `pyproject.toml` for the reason recorded there — an AST
 analyzer's domain objects are themselves `ast` nodes, so `isinstance` over node
 classes here already is the recipe the rule prescribes, not the pattern it bans.
@@ -77,6 +83,7 @@ python -m anti_slop --explain no-widen-then-cast
 python -m anti_slop --rule no-object-parameters src/
 python -m anti_slop --generate-baseline           # accept today's findings
 python -m anti_slop --diff origin/main            # only what this change touched
+python -m anti_slop review --base origin/main     # that diff, read back as a review
 ```
 
 Exit codes: `0` clean, `1` violations found, `2` configuration or usage error.
@@ -129,6 +136,15 @@ preset = "recommended"
 | `recommended` | `error` | `warn` | adopting the tool: hatches block, policy reports |
 | `minimal` | `error`, high confidence only (`no-unsafe-dict-values` → `off`) | `off` | you want the indisputable subset and nothing else |
 | `legacy` | `warn` | `off` | a large existing codebase, before anything is cleaned up |
+| `agent` | `error` | `warn` | the `review` default: anything a finding can be trusted about blocks, policy reports |
+| `agent-strict` | `error` | `error` | `review` on a team that has accepted the architectural tier too |
+
+The two `agent` presets exist for the `review` subcommand (see "Reviewing an agent's
+diff"), and are equally usable as a project's own `preset`. A preset reads a rule's
+**tier** first and may then let its **confidence** relax the result: that is how
+`minimal` drops everything below high confidence, and how `agent` keeps a `policy`
+finding at `warn` no matter which tier files it. A confidence can only soften what
+the tier decided, never sharpen it.
 
 `[tool.anti-slop.rules]` is applied on top and always wins, per rule — a preset is
 where a project starts, not a ceiling on what it can say afterwards. Setting only an
@@ -559,10 +575,22 @@ Suggested postures by codebase type:
 
 The presets are the executable form of that table: `preset = "recommended"` is this
 posture in one line — escape hatches at `error`, architectural policy at `warn` —
-and `legacy` is the same idea for a codebase that cannot act on either yet. Start
-from a preset, then adjust the individual rules that matter for your domain; each
-rule's own `--explain` output carries the posture advice above under **When to
-disable**.
+and `legacy` is the same idea for a codebase that cannot act on either yet. `agent`
+is that posture applied to a *change* rather than a repository, and it is what
+`anti-slop review` runs by default; `agent-strict` is the same review with the
+architectural tier accepted too, for a team that has taken the table above as
+policy. Start from a preset, then adjust the individual rules that matter for your
+domain; each rule's own `--explain` output carries the posture advice above under
+**When to disable**.
+
+The soft default of `agent` is a deliberate choice, and not an obvious one. Field
+runs say agents produce architectural findings *disproportionately* — 3 769
+`no-module-mocking` hits across two production repositories, 100% of them in tests,
+almost all of the shape "mock everything, then assert on the mock" — so the argument
+that policy findings are noise is weaker here than it looks, and `review` is
+diff-scoped anyway. The default is still `warn`, because adoption is decided by the
+first run on an unfamiliar repository. A team that has accepted the architectural
+tier moves to `agent-strict` and gets the stricter reading.
 
 ## Security model
 
@@ -735,6 +763,87 @@ Outside a git repository, or with a `<base>` git cannot resolve, the run exits `
 with the reason rather than reporting a misleading clean tree. Git queries run from
 the configuration root, so a project nested inside a larger repository and a run
 started from a subdirectory both resolve the repository the checked files belong to.
+
+## Reviewing an agent's diff
+
+`review` is that same diff, read back as a review. It is the mode to hand an agent
+after it edits a repository, and the mode to run as a gate on a branch an agent
+opened:
+
+```bash
+python -m anti_slop review --base origin/main
+```
+
+The findings of the change — nothing else in the repository — grouped by how much
+each one can be trusted, each carrying the reason the rule exists and the recipe that
+replaces it:
+
+```
+HIGH CONFIDENCE
+src/billing.py:11 no-widen-then-cast
+  `raw` is `invoice` widened to `Any` a few lines up, and this `cast` claims a narrow type back from it. …
+  Why: A binding with a proven type is widened to `Any`/`object` and then cast back to a narrow type a few lines later.
+  Instead: Delete the widening step and use the original binding directly, with the type it already carries.
+
+MEDIUM CONFIDENCE
+src/billing.py:14 no-unsafe-dict-values
+  `dict[str, Any]` names an unsafe value type: `Any` type-checks against anything, so nothing about a lookup's result is proven downstream. …
+  Why: `dict[str, Any]` is the most common way a payload keeps travelling through a codebase without ever being modelled.
+  Instead: Narrow the value type to a TypedDict, dataclass, model, or specific domain type -- the shape the code already assumes when it reads keys out of the mapping.
+
+POLICY
+src/billing.py:19 no-adhoc-isinstance
+  warning: `isinstance(...)` branches on representation instead of a decoded contract. …
+  Why: An inline `isinstance` branch re-derives a claim about a value's shape at the point of use instead of deciding it once at a boundary.
+  Instead: Decode the input into a domain type at the I/O boundary -- a pydantic/msgspec model or a dataclass -- and branch on that domain value, so the narrowing happens once where the data arrives.
+
+3 findings: 1 high confidence, 1 medium confidence, 1 policy (2 blocking, 1 warning)
+```
+
+Sections run `HIGH CONFIDENCE` → `MEDIUM CONFIDENCE` → `POLICY`, and an empty one is
+omitted, so the first thing on screen is the finding least worth arguing with. Within
+a section the findings keep the run's own order, by file and position. **`Why` and
+`Instead` are the opening sentences of the rule's own metadata**, not prose generated
+about this patch: the part that knows about your code is the standard diagnostic
+message above them, which already names the identifier, the annotation, the call. A
+review that invented an explanation per hunk would be a language model with a
+linter's exit code.
+
+Paths are POSIX and relative to the configuration root — the form a reviewer
+recognises, and the one difference from `--diff`'s output, which prints paths as the
+walk produced them. Exit codes are the usual ones: `0` clean or warnings only, `1` a
+blocking finding, `2` outside a git repository, on a `<base>` git cannot resolve, or
+on a configuration error — with the same messages `--diff` gives.
+
+**Which preset judges the change**, lowest precedence first:
+
+1. `agent` — the built-in default: high and medium confidence at `error`, `policy` at
+   `warn`. High signal on a repository nobody configured for this tool.
+2. `--preset <name>` — any preset, `agent-strict` (everything at `error`) included.
+3. `[tool.anti-slop.rules]` — the repository's per-rule levels, which win as always.
+
+The repository's own `preset` key is the one thing `review` does not read: a posture
+chosen for full runs of a whole tree is not a decision about how a diff gets
+reviewed. Everything else in `[tool.anti-slop]` applies normally — `include`,
+`exclude`, `groups`, `baseline`.
+
+`--baseline` works here too, and `--format json` emits one document for a harness or
+an orchestrator: `{"base": ..., "preset": ..., "findings": [...]}`, each finding
+carrying the eight keys of a `--format json` diff run plus `confidence`, `tier`,
+`why` and `instead`, in the order the text renders them. `github` and `sarif` exit
+`2`: they stream diagnostics, and grouping by confidence is the whole point here.
+
+`review` differs from `--diff` in three ways and no more: the output is a grouped
+report instead of one line per diagnostic, the default posture is `agent` instead of
+the repository's own, and there is no `--diff-committed` counterpart. Reviewing the
+**working tree** is what the mode is for — an agent's change is reviewed while it is
+still uncommitted — and history that has already landed is what `--diff-committed`
+itself covers.
+
+Positional paths bound the review the same way they bound `--diff`. One consequence
+of `review` being a subcommand: a repository with a directory called `review` names
+it as `./review`, `review/`, or after `--`; the bare word is the subcommand, as it is
+in `git`, `pip` and `npm`.
 
 ## Output formats
 

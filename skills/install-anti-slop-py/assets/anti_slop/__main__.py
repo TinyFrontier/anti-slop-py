@@ -1,4 +1,22 @@
-"""Command line entry point: ``python -m anti_slop [paths...]``."""
+"""Command line entry point: ``python -m anti_slop [paths...]``.
+
+Two entry points share this module. The default one is the checker -- paths, filters
+and a format -- and it is the one every existing invocation reaches. ``review`` is a
+subcommand in front of it: ``python -m anti_slop review --base origin/main``.
+
+**How the subcommand is dispatched, and why.** The first argument is read as a
+subcommand name only when it is *exactly* ``review``; anything else goes to the
+checker's own parser, unchanged, byte for byte. argparse subparsers were not used,
+because a parser that has both an optional subcommand and a ``nargs="*"`` positional
+cannot tell the two apart -- adding subparsers would have changed how the existing
+invocation parses, which is the one thing this change must not do.
+
+The edge case that costs is a repository with a directory called ``review``. The
+subcommand wins, the same way it does in ``git``, ``pip`` or ``npm``, and a path is
+named the way it is there too: ``python -m anti_slop ./review``, ``review/``, or
+``python -m anti_slop -- review``. All three differ from the bare word, so all three
+reach the checker as a path.
+"""
 
 from __future__ import annotations
 
@@ -26,11 +44,19 @@ from anti_slop.engine.config import (
     PRESETS,
     Config,
     ConfigError,
+    Preset,
     known_rules,
     load_config,
+    preset_named,
 )
 from anti_slop.engine.diff import ChangedLines, DiffError, changed_lines
 from anti_slop.engine.fingerprint import fingerprints_for
+from anti_slop.engine.review import (
+    review_findings,
+    review_json,
+    review_summary,
+    review_text,
+)
 from anti_slop.engine.rule import Diagnostic, Rule
 from anti_slop.engine.runner import (
     EXIT_ERROR,
@@ -50,6 +76,14 @@ __all__ = ["cli", "main"]
 
 PROG = "anti-slop"
 
+REVIEW_COMMAND = "review"
+
+# The preset `review` runs under unless `--preset` says otherwise: high and medium
+# confidence block, architectural policy reports. It overrides the preset the
+# repository configured -- see `load_config` -- because a posture chosen for full
+# runs of a whole tree is not a decision about how an agent's diff is reviewed.
+REVIEW_PRESET = "agent"
+
 # The formats that carry a run summary. `json`, `sarif` and `github` are consumed by
 # machines that expect one document (or one annotation per line) and nothing else, so
 # the baseline summary would be corruption rather than information there.
@@ -62,6 +96,11 @@ _FORMATS = ("text", "json", "github", "sarif")
 # rejected instead of silently falling back to text.
 _CATALOG_FORMATS = ("text", "json")
 
+# `review` renders a report, not a stream of diagnostics: `github` annotates a diff
+# without the confidence grouping that is the whole point here, and SARIF has no
+# place for it either. Both stay available on the checker itself.
+_REVIEW_FORMATS = ("text", "json")
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -69,6 +108,11 @@ def build_parser() -> argparse.ArgumentParser:
         description=(
             "Reject low-evidence, low-signal Python patterns. Every diagnostic says"
             " what to write instead."
+        ),
+        epilog=(
+            f"subcommand: {PROG} {REVIEW_COMMAND} --base BASE  --  the change this"
+            f" working tree carries, as a report grouped by confidence"
+            f" ({PROG} {REVIEW_COMMAND} --help)"
         ),
     )
     parser.add_argument(
@@ -170,7 +214,85 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def build_review_parser() -> argparse.ArgumentParser:
+    """The parser for ``anti-slop review`` -- the checker's diff mode, as a report."""
+    parser = argparse.ArgumentParser(
+        prog=f"{PROG} {REVIEW_COMMAND}",
+        description=(
+            "Review the change this working tree carries against BASE: the findings"
+            " on the lines it touched, grouped by confidence, each with the reason"
+            " the rule exists and the recipe that replaces it."
+        ),
+    )
+    parser.add_argument(
+        "paths",
+        nargs="*",
+        help="files or directories to bound the review to; defaults to the changed files",
+    )
+    parser.add_argument(
+        "--base",
+        required=True,
+        metavar="BASE",
+        help=(
+            "the revision to review against; the change is this working tree --"
+            " staged, unstaged and untracked -- against its merge base with BASE"
+        ),
+    )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="pyproject.toml to read; default is upward discovery from the cwd",
+    )
+    parser.add_argument(
+        "--preset",
+        default=REVIEW_PRESET,
+        metavar="NAME",
+        help=(
+            "the posture to review under; overrides the repository's own preset,"
+            f" which review never uses (default: {REVIEW_PRESET})"
+        ),
+    )
+    # The full format list, so that `--format sarif` is answered with the reason it
+    # does not apply here rather than with argparse's bare "invalid choice" -- the
+    # same treatment `--list-rules` and `--explain` give it.
+    parser.add_argument(
+        "--format",
+        choices=_FORMATS,
+        default="text",
+        dest="output_format",
+        help=f"output format: {' or '.join(_REVIEW_FORMATS)}",
+    )
+    parser.add_argument(
+        "--baseline",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help=(
+            "hide the findings recorded in this baseline file; overrides"
+            " [tool.anti-slop].baseline"
+        ),
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help="worker processes for the file walk (default: auto)",
+    )
+    return parser
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    """Dispatch to the subcommand or to the checker; see the module docstring."""
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments and arguments[0] == REVIEW_COMMAND:
+        return _review(arguments[1:])
+    return _check(arguments)
+
+
+def _check(argv: Sequence[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -222,7 +344,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     # the whole project, so matching it against a diff-narrowed set would report the
     # narrow set's own entries as stale on every run.
     diagnostics = _within_diff(outcome.diagnostics, changed)
-    fingerprints = _fingerprints(args, config, diagnostics)
+    fingerprints = _fingerprints(
+        config,
+        diagnostics,
+        wanted=(
+            args.generate_baseline
+            or _baseline_requested(args, config)
+            or args.output_format == "sarif"
+        ),
+    )
 
     if args.generate_baseline:
         if outcome.failures:
@@ -250,6 +380,80 @@ def main(argv: Sequence[str] | None = None) -> int:
     return RunOutcome(
         diagnostics=baselined.diagnostics, failures=outcome.failures
     ).exit_code()
+
+
+def _review(argv: Sequence[str]) -> int:
+    """``anti-slop review --base <ref> [paths...]``.
+
+    A diff run of the working tree, rendered as a report. There is deliberately no
+    ``--diff-committed`` counterpart: reviewing what has already been committed is
+    what ``--diff-committed`` itself is for, and an agent's change is reviewed while
+    it is still in the working tree, which is the whole reason this mode exists.
+    """
+    args = build_review_parser().parse_args(argv)
+
+    try:
+        _require_review_format(args.output_format)
+        preset = _review_preset(args.preset)
+        config = load_config(
+            registry=CORE_RULES, explicit_path=args.config, preset=preset
+        )
+        jobs = _validate_jobs(args.jobs)
+        changed = changed_lines(args.base, root=config.root, committed=False)
+        files = _collect_targets(args.paths, config, changed)
+    except (ConfigError, DiffError) as error:
+        print(f"{PROG}: {error}", file=sys.stderr)
+        return EXIT_ERROR
+
+    rules = config.enabled_rules()
+    try:
+        outcome = run(files, rules, config.rules, jobs=jobs)
+    except ConfigError as error:
+        print(f"{PROG}: {error}", file=sys.stderr)
+        return EXIT_ERROR
+
+    diagnostics = _within_diff(outcome.diagnostics, changed)
+    fingerprints = _fingerprints(
+        config, diagnostics, wanted=_baseline_requested(args, config)
+    )
+    try:
+        baselined = _apply_baseline(
+            args, config, diagnostics, fingerprints, whole_project=False
+        )
+        findings = review_findings(baselined.diagnostics, rules, config.root)
+    except ConfigError as error:
+        print(f"{PROG}: {error}", file=sys.stderr)
+        return EXIT_ERROR
+
+    if args.output_format == "json":
+        print(review_json(args.base, preset.name, findings))
+    else:
+        if findings:
+            print(review_text(findings))
+            print()
+        print(review_summary(findings))
+        if baselined.summary() is not None:
+            print(baselined.summary())
+
+    _report_failures(outcome.failures)
+    return RunOutcome(
+        diagnostics=baselined.diagnostics, failures=outcome.failures
+    ).exit_code()
+
+
+def _review_preset(name: str) -> Preset:
+    """``--preset``, defaulting to :data:`REVIEW_PRESET`; an unknown name exits 2."""
+    return preset_named(name, f"{PROG} {REVIEW_COMMAND} --preset")
+
+
+def _require_review_format(output_format: str) -> None:
+    if output_format not in _REVIEW_FORMATS:
+        available = " or ".join(_REVIEW_FORMATS)
+        message = (
+            f"{REVIEW_COMMAND} renders a report, not a diagnostics stream:"
+            f" --format must be {available}, got {output_format!r}"
+        )
+        raise ConfigError(message)
 
 
 def _reject_conflicting_modes(args: argparse.Namespace) -> None:
@@ -314,7 +518,7 @@ def _within_diff(
 
 
 def _fingerprints(
-    args: argparse.Namespace, config: Config, diagnostics: Sequence[Diagnostic]
+    config: Config, diagnostics: Sequence[Diagnostic], *, wanted: bool
 ) -> tuple[str, ...]:
     """Fingerprints for the modes that consume them, and nothing for the ones that do not.
 
@@ -322,14 +526,14 @@ def _fingerprints(
     Three modes need that -- writing a baseline, applying one, and SARIF output -- and
     a plain ``--format text`` run needs none of it.
     """
-    wants_baseline = (
-        args.generate_baseline
-        or args.baseline is not None
-        or config.baseline is not None
-    )
-    if wants_baseline or args.output_format == "sarif":
+    if wanted:
         return fingerprints_for(diagnostics, config.root)
     return ()
+
+
+def _baseline_requested(args: argparse.Namespace, config: Config) -> bool:
+    """Whether a baseline was actually asked for, on the command line or in the file."""
+    return args.baseline is not None or config.baseline is not None
 
 
 def _by_diagnostic(
@@ -369,7 +573,7 @@ def _apply_baseline(
     run that silently hid findings because of a file nobody named would be the worst
     possible default for a tool whose whole point is saying what it found.
     """
-    if args.baseline is None and config.baseline is None:
+    if not _baseline_requested(args, config):
         return BaselineOutcome(diagnostics=tuple(diagnostics), hidden=0, stale=0)
     baseline = load_baseline(_baseline_path(args, config))
     return apply_baseline(

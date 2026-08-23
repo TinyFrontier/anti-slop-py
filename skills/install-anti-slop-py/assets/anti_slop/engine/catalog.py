@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import difflib
 import json
+import re
 import textwrap
 from collections.abc import Iterable, Mapping, Sequence
 
@@ -25,6 +26,7 @@ __all__ = [
     "DEFAULT_LEVEL",
     "OPTION_TYPE_BOOL",
     "OPTION_TYPE_STRING_LIST",
+    "condense",
     "explain_json",
     "explain_text",
     "listing_key",
@@ -49,6 +51,17 @@ _SUGGESTION_CUTOFF = 0.6
 # Prose is wrapped for a terminal; the indent marks a section's body.
 _WRAP_WIDTH = 79
 _BODY_INDENT = "  "
+
+# `condense` takes at most this many opening sentences, and stops early once they
+# exceed this many characters: a review comment gets a reason, not an essay.
+# `--explain` stays the long form.
+_CONDENSED_SENTENCES = 2
+_CONDENSED_BUDGET = 240
+
+# A sentence boundary: closing punctuation followed by whitespace. Periods inside
+# code spans (`obj.attr`, `.shape`) carry no following space and are therefore not
+# boundaries, which is why this needs no list of abbreviations.
+_SENTENCE_BREAK = re.compile(r"(?<=[.!?])\s+")
 
 # One JSON option entry, and one JSON rule entry. The unions are exact rather than
 # `object`: this file is linted by the rules it describes.
@@ -120,6 +133,24 @@ def explain_json(rule: Rule) -> str:
         "fp_caveats": metadata.fp_caveats,
     }
     return json.dumps(payload, indent=2)
+
+
+def condense(prose: str) -> str:
+    """The opening sentence or two of a metadata block, for a one-line context.
+
+    Selection, not summarization: the result is a prefix of what the rule already
+    declares, so the short form ``review`` prints and the long form ``--explain``
+    prints can never drift apart, and neither depends on the code being reviewed.
+    Prose with no sentence break comes back whole.
+    """
+    sentences = _SENTENCE_BREAK.split(prose.strip())
+    taken = sentences[:1]
+    for sentence in sentences[1:_CONDENSED_SENTENCES]:
+        candidate = f"{' '.join(taken)} {sentence}"
+        if len(candidate) > _CONDENSED_BUDGET:
+            break
+        taken.append(sentence)
+    return " ".join(taken)
 
 
 def similar_rule_ids(wanted: str, known: Iterable[str]) -> tuple[str, ...]:

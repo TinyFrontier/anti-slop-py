@@ -30,7 +30,8 @@ from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol, cast
 
 from anti_slop.engine.rule import (
-    CONFIDENCE_HIGH,
+    CONFIDENCE_MEDIUM,
+    CONFIDENCE_POLICY,
     TIER_ARCHITECTURAL,
     TIER_ESCAPE_HATCH,
     BoolOption,
@@ -66,6 +67,8 @@ SECTION = "anti-slop"
 LEVEL_ERROR = "error"
 LEVEL_WARN = "warn"
 LEVEL_OFF = "off"
+# Strictest first. The order is load-bearing beyond validation: a preset's
+# confidence cap (see :class:`Preset`) compares two levels by it.
 _LEVELS = (LEVEL_ERROR, LEVEL_WARN, LEVEL_OFF)
 
 _TOP_LEVEL_KEYS = frozenset(
@@ -121,31 +124,51 @@ class RuleSetting:
 class Preset:
     """A named starting point for the levels of the *core* rules.
 
-    A preset reads two things from a rule's metadata: its tier decides which of the
-    two levels below applies, and its confidence decides whether a
-    ``high_confidence_only`` preset keeps it at all. Rules of an opt-in group are
-    never touched -- a group is enabled by ``groups`` and configured by name, and a
-    preset chosen for the core has no opinion about framework policy.
+    A preset reads two things from a rule's metadata. The **tier** picks one of the
+    two levels below. The **confidence** may then relax that level, through
+    ``confidence_caps`` -- a tuple of ``(confidence, level)`` pairs, each an upper
+    bound on how loud a finding of that confidence gets to be. A cap can only make a
+    preset gentler, never sharper, which is what keeps a preset readable as one
+    sentence: ``minimal`` is "escape hatches at error, and nothing below high
+    confidence at all"; ``agent`` is "everything at error, except that policy only
+    reports".
+
+    Rules of an opt-in group are never touched -- a group is enabled by ``groups``
+    and configured by name, and a preset chosen for the core has no opinion about
+    framework policy.
     """
 
     name: str
     escape_hatch: str
     architectural: str
     summary: str
-    high_confidence_only: bool = False
+    confidence_caps: tuple[tuple[str, str], ...] = ()
 
     def level_for(self, metadata: RuleMetadata) -> str:
         """The level this preset gives a rule with ``metadata``."""
         if metadata.tier == TIER_ESCAPE_HATCH:
-            if self.high_confidence_only and metadata.confidence != CONFIDENCE_HIGH:
-                return LEVEL_OFF
-            return self.escape_hatch
-        if metadata.tier == TIER_ARCHITECTURAL:
-            return self.architectural
+            level = self.escape_hatch
+        elif metadata.tier == TIER_ARCHITECTURAL:
+            level = self.architectural
+        else:
+            return LEVEL_ERROR
+        return _gentler_of(level, self._cap_for(metadata.confidence))
+
+    def _cap_for(self, confidence: str) -> str:
+        """The bound this preset puts on ``confidence``; ``error`` means no bound."""
+        for name, level in self.confidence_caps:
+            if name == confidence:
+                return level
         return LEVEL_ERROR
 
 
-# The presets this distribution ships, in order from strictest to most forgiving.
+def _gentler_of(first: str, second: str) -> str:
+    """Whichever of two levels reports less; ``_LEVELS`` is ordered strictest first."""
+    return max(first, second, key=_LEVELS.index)
+
+
+# The presets this distribution ships: the four adoption postures first, from
+# strictest to most forgiving, then the two the `review` subcommand is built around.
 # `strict` is spelled out rather than treated as "no preset" so that writing it down
 # means the same thing as leaving `preset` out entirely.
 PRESETS: tuple[Preset, ...] = (
@@ -166,13 +189,32 @@ PRESETS: tuple[Preset, ...] = (
         escape_hatch=LEVEL_ERROR,
         architectural=LEVEL_OFF,
         summary="only the high-confidence escape-hatch rules, at error",
-        high_confidence_only=True,
+        confidence_caps=(
+            (CONFIDENCE_MEDIUM, LEVEL_OFF),
+            (CONFIDENCE_POLICY, LEVEL_OFF),
+        ),
     ),
     Preset(
         name="legacy",
         escape_hatch=LEVEL_WARN,
         architectural=LEVEL_OFF,
         summary="nothing blocks -- a starting point for a large old codebase",
+    ),
+    Preset(
+        name="agent",
+        escape_hatch=LEVEL_ERROR,
+        architectural=LEVEL_WARN,
+        summary=(
+            "the review default: anything a finding can be trusted about blocks,"
+            " policy reports"
+        ),
+        confidence_caps=((CONFIDENCE_POLICY, LEVEL_WARN),),
+    ),
+    Preset(
+        name="agent-strict",
+        escape_hatch=LEVEL_ERROR,
+        architectural=LEVEL_ERROR,
+        summary="review with the architectural tier accepted too: everything blocks",
     ),
 )
 
@@ -294,19 +336,24 @@ def _glob_to_regex(pattern: str) -> re.Pattern[str]:
     return re.compile("".join(parts))
 
 
-def default_config(root: Path, registry: Sequence[Rule]) -> Config:
+def default_config(
+    root: Path, registry: Sequence[Rule], preset: Preset | None = None
+) -> Config:
     """Every core rule at ``error`` with default options -- the zero-config baseline.
 
     No configuration file means no ``groups``: opt-in rules are never on by default.
+    ``preset`` is the one a caller imposed (``review`` does); without it every rule
+    starts at ``error``, exactly as before presets existed.
     """
     return Config(
         root=root,
         source=None,
         include=(),
         exclude=DEFAULT_EXCLUDE,
-        rules=_default_settings(registry),
+        rules=_default_settings(registry, preset),
         groups=(),
         registry=tuple(registry),
+        preset=None if preset is None else preset.name,
     )
 
 
@@ -441,23 +488,33 @@ def load_config(
     registry: Sequence[Rule],
     explicit_path: Path | None = None,
     start_dir: Path | None = None,
+    preset: Preset | None = None,
 ) -> Config:
-    """Load configuration, either from ``explicit_path`` or by upward discovery."""
+    """Load configuration, either from ``explicit_path`` or by upward discovery.
+
+    ``preset`` is a preset the *caller* imposes, and it replaces the one the file
+    names. Only ``review`` passes it: that subcommand comes with a posture of its
+    own, so a repository's ``preset`` -- chosen for full runs of the whole tree --
+    does not decide how an agent's diff is reviewed. Everything else in the file
+    still applies, ``[tool.anti-slop.rules]`` included, and rules still win.
+    """
     start = start_dir if start_dir is not None else Path.cwd()
 
     if explicit_path is not None:
         if not explicit_path.is_file():
             message = f"config file not found: {explicit_path}"
             raise ConfigError(message)
-        return _load_from(explicit_path, registry)
+        return _load_from(explicit_path, registry, preset)
 
     discovered = find_pyproject(start)
     if discovered is None:
-        return default_config(start, registry)
-    return _load_from(discovered, registry)
+        return default_config(start, registry, preset)
+    return _load_from(discovered, registry, preset)
 
 
-def _load_from(path: Path, registry: Sequence[Rule]) -> Config:
+def _load_from(
+    path: Path, registry: Sequence[Rule], imposed: Preset | None = None
+) -> Config:
     try:
         with path.open("rb") as handle:
             document: dict[str, TomlValue] = tomllib.load(handle)
@@ -471,10 +528,10 @@ def _load_from(path: Path, registry: Sequence[Rule]) -> Config:
     root = path.parent
     tool_table = document.get("tool")
     if not isinstance(tool_table, dict):
-        return default_config(root, registry)
+        return default_config(root, registry, imposed)
     section = tool_table.get(SECTION)
     if section is None:
-        return default_config(root, registry)
+        return default_config(root, registry, imposed)
     if not isinstance(section, dict):
         message = f"{path}: [tool.{SECTION}] must be a table"
         raise ConfigError(message)
@@ -497,8 +554,12 @@ def _load_from(path: Path, registry: Sequence[Rule]) -> Config:
     )
 
     groups = _read_groups(section.get("groups"), path)
-    preset_name = _read_preset(section.get("preset"), path)
-    preset = None if preset_name is None else preset_named(preset_name, str(path))
+    # The file's `preset` is still validated even when the caller imposed one, so a
+    # typo in pyproject.toml is an error in every mode rather than only some.
+    configured = _read_preset(section.get("preset"), path)
+    named = None if configured is None else preset_named(configured, str(path))
+    preset = imposed if imposed is not None else named
+    preset_name = None if preset is None else preset.name
     baseline = _read_baseline(section.get("baseline"), path)
     effective = resolve_registry(registry, groups, str(path))
     rules = _read_rules(section.get("rules"), path, effective, preset)
