@@ -1,4 +1,4 @@
-"""Tests for the phase-2 comment primitives (PLAN.md section 4).
+"""Tests for the phase-2 comment primitives.
 
 Line and file suppressions of anti-slop's own directives live in
 ``test_suppressions.py``; this module covers the two primitives added for

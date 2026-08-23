@@ -1,4 +1,4 @@
-"""Tests for the ``no-any-type-aliases`` rule (PLAN.md section 3.4, row 12)."""
+"""Tests for the ``no-any-type-aliases`` rule."""
 
 from __future__ import annotations
 

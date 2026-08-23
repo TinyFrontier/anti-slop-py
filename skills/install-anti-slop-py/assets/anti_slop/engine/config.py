@@ -1,4 +1,4 @@
-"""Configuration: the ``[tool.anti-slop]`` section of ``pyproject.toml`` (PLAN.md FR-2).
+"""Configuration: the ``[tool.anti-slop]`` section of ``pyproject.toml``.
 
 Everything invalid is loud: an unknown rule id, an unknown option, a wrongly typed
 option or an unknown level is a configuration error (CLI exit code 2), never a

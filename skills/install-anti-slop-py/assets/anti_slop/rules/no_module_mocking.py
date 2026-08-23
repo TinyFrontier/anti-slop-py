@@ -1,5 +1,4 @@
-"""``no-module-mocking`` -- reject patching another module's attributes in tests
-(PLAN.md section 3.4, row 4).
+"""``no-module-mocking`` -- reject patching another module's attributes in tests.
 
 Module mocking makes the import graph the seam. The test then proves that the patched
 name still exists at that path and is still spelled that way -- not that the code
@@ -55,7 +54,7 @@ RULE_ID = "no-module-mocking"
 
 # The diagnostic is assembled from two named halves on purpose: the problem statement
 # is framework-independent, while the recipe is the part a contrib group specializes.
-# The fastapi group (PLAN.md section 3.5, phase 6) composes its own message as
+# The fastapi group composes its own message as
 # `f"{MESSAGE_PROBLEM} <dependency_overrides recipe>"` rather than restating the
 # problem, so both messages stay in sync from this one place.
 MESSAGE_PROBLEM = (

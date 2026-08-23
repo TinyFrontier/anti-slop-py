@@ -1,4 +1,4 @@
-"""Comment extraction and suppression parsing (PLAN.md FR-3).
+"""Comment extraction and suppression parsing.
 
 ``ast`` discards comments, so the comment map is built from ``tokenize``. The same
 map serves ``require-safety-comment`` (phase 2), which needs the raw text of the
@@ -13,8 +13,8 @@ Supported directives::
 A suppression without a rule id is a configuration error, not a silent blanket
 "turn everything off".
 
-Two further primitives sit on top of the same map, for phase 2 (PLAN.md section 4,
-"Ключевые решения движка"):
+Two further primitives sit on top of the same map, for phase 2
+("Ключевые решения движка"):
 
 * :func:`safety_comment_for` -- does a safety comment cover this AST node? The
   marker is ``SAFETY`` followed by a colon and the invariant it states; an empty one
@@ -27,7 +27,7 @@ Two further primitives sit on top of the same map, for phase 2 (PLAN.md section 
 * :func:`checker_suppressions` -- every type-checker suppression in the file, in the
   portable spelling and in the ty and pyright dialects, read from the token stream
   rather than from ``ast.parse(type_comments=True)`` so that codes and positions come
-  from the same place as every other comment (PLAN.md section 4).
+  from the same place as every other comment.
 """
 
 from __future__ import annotations

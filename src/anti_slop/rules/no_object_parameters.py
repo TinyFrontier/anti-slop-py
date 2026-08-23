@@ -1,6 +1,6 @@
 """``no-object-parameters`` -- reject parameters annotated ``object``.
 
-PLAN.md section 3.4, row 5. ``object`` is Python's safe top type, the counterpart of
+``object`` is Python's safe top type, the counterpart of
 TypeScript's ``unknown``, and the original anti-slop bans it for the same reason: a
 parameter that accepts everything names no contract, so neither the caller nor the
 body can prove anything about the value. This is deliberately stricter than the

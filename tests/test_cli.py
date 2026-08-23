@@ -1,4 +1,4 @@
-"""End-to-end CLI tests: CLI -> config -> diagnostic -> suppression (PLAN.md FR-1)."""
+"""End-to-end CLI tests: CLI -> config -> diagnostic -> suppression."""
 
 from __future__ import annotations
 

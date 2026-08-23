@@ -1,4 +1,4 @@
-"""Tests for line and file suppressions (PLAN.md FR-3)."""
+"""Tests for line and file suppressions."""
 
 from __future__ import annotations
 

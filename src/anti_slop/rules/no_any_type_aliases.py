@@ -1,5 +1,4 @@
-"""``no-any-type-aliases`` -- reject type aliases that resolve to ``Any``
-(PLAN.md section 3.4, row 12).
+"""``no-any-type-aliases`` -- reject type aliases that resolve to ``Any``.
 
 An alias is a promise: the name says a domain type is coming. ``Metadata = Any``
 breaks that promise silently -- every signature that says ``Metadata`` reads as if it

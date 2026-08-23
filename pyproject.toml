@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 # Zero runtime dependencies: a vendored copy runs as `python -m anti_slop`
-# without installing anything. See PLAN.md section 2.2.
+# without installing anything.
 dependencies = []
 
 [project.scripts]
@@ -31,7 +31,7 @@ addopts = "-q"
 python-version = "3.12"
 root = ["./src", "./tests"]
 
-# anti-slop lints itself (dogfooding, PLAN.md section 3.6).
+# anti-slop lints itself (dogfooding).
 [tool.anti-slop]
 include = ["src", "tests"]
 exclude = [".venv/**", "**/__pycache__/**"]

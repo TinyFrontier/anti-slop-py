@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mirror ``src/anti_slop`` into the install skill's assets (PLAN.md section 1.2).
+"""Mirror ``src/anti_slop`` into the install skill's assets.
 
 The skill ships a vendored copy of the linter, so the copy has to be the source --
 byte for byte, not "close enough". ``--check`` is the CI guard: it compares the two

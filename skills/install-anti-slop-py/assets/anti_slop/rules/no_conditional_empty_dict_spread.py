@@ -1,6 +1,6 @@
 """``no-conditional-empty-dict-spread`` -- reject a ternary spread with an empty branch.
 
-PLAN.md section 3.4, row 2 (port of ``no-conditional-empty-object-spread``). The
+Port of ``no-conditional-empty-object-spread``. The
 pattern ``{**({"timeout": t} if t is not None else {})}`` fabricates an optional
 field: the field's presence or absence is decided by an expression buried inside a
 spread, invisible to anyone reading the dict's shape, and invisible to the type
@@ -23,7 +23,7 @@ effect. An unconditional ``**{}`` (no ternary at all) is a different, harmless-l
 smell and is out of scope here; so is a spread of a plain variable or a spread inside
 a call to something other than ``dict`` (e.g. ``configure(**({"r": 1} if c else {}))``)
 -- narrowing that further needs call-target resolution, out of reach for this
-syntax-only rule (PLAN.md phase 1 vs. phase 2, ``scopes.py``).
+syntax-only rule (phase 1 vs. phase 2, ``scopes.py``).
 """
 
 from __future__ import annotations

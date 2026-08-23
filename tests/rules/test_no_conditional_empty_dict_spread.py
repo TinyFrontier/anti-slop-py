@@ -1,4 +1,4 @@
-"""Tests for the ``no-conditional-empty-dict-spread`` rule (PLAN.md section 3.4, row 2)."""
+"""Tests for the ``no-conditional-empty-dict-spread`` rule."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Tests for the ``no-dynamic-dispatch`` rule (PLAN.md section 3.4, row 7)."""
+"""Tests for the ``no-dynamic-dispatch`` rule."""
 
 from __future__ import annotations
 

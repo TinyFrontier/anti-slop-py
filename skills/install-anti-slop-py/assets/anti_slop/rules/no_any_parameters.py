@@ -1,4 +1,4 @@
-"""``no-any-parameters`` -- reject parameters annotated ``Any`` (PLAN.md section 3.4, row 10).
+"""``no-any-parameters`` -- reject parameters annotated ``Any``.
 
 ``Any`` is Python's unsafe escape hatch, the counterpart of TypeScript's ``any``: it
 switches the type checker off for every use of the value, so a parameter annotated
@@ -9,7 +9,7 @@ No exceptions. The TypeScript original carves out the ``cause`` convention (reth
 under ``Error.cause``, itself typed ``unknown``); that convention is a TypeScript-ism.
 Python's own exception-chaining idiom is ``raise ... from e``, which needs no
 ``Any``-typed parameter anywhere, so nothing here transfers and no carve-out is
-offered (PLAN.md section 3.4, row 10).
+offered.
 
 Detection is purely syntactic (see ``_annotations.py`` for the known limitations of
 matching ``Any`` without import resolution).

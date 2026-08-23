@@ -1,4 +1,4 @@
-"""One AST pass for all enabled rules (PLAN.md FR-5).
+"""One AST pass for all enabled rules.
 
 The walker records parent links while it descends and dispatches every visited node
 to the handlers subscribed to that node type. Subscribing to a base class (say

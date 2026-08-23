@@ -1,4 +1,4 @@
-"""Tests for the ``no-adhoc-isinstance`` rule (PLAN.md section 3.4, row 8)."""
+"""Tests for the ``no-adhoc-isinstance`` rule."""
 
 from __future__ import annotations
 

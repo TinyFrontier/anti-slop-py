@@ -1,4 +1,4 @@
-"""Tests for the ``no-widen-then-cast`` rule (PLAN.md section 3.4, row 14)."""
+"""Tests for the ``no-widen-then-cast`` rule."""
 
 from __future__ import annotations
 

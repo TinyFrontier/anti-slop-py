@@ -1,4 +1,4 @@
-"""Command line entry point: ``python -m anti_slop [paths...]`` (PLAN.md FR-1)."""
+"""Command line entry point: ``python -m anti_slop [paths...]``."""
 
 from __future__ import annotations
 

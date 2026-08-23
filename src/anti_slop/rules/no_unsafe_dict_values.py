@@ -1,5 +1,4 @@
-"""``no-unsafe-dict-values`` -- reject dict-like annotations with an unsafe value type
-(PLAN.md section 3.4, row 13).
+"""``no-unsafe-dict-values`` -- reject dict-like annotations with an unsafe value type.
 
 Flags a dict-like container (``dict``, ``Dict``, ``Mapping``, ``MutableMapping``,
 ``defaultdict`` -- bare name or attribute form, e.g. ``typing.Mapping``,

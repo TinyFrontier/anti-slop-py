@@ -1,6 +1,6 @@
 """File discovery, the per-file engine pass, and output formatting.
 
-Exit codes (PLAN.md FR-1): ``0`` clean, ``1`` violations found, ``2``
+Exit codes: ``0`` clean, ``1`` violations found, ``2``
 configuration or usage error -- including a target file that does not parse,
 because a file that cannot be analysed must not be reported as clean.
 """
@@ -44,7 +44,7 @@ EXIT_ERROR = 2
 _PYTHON_SUFFIXES = (".py", ".pyi")
 
 # Above this many collected files, `run()` distributes work across a
-# `ProcessPoolExecutor` instead of walking files one at a time (PLAN.md section 3.6).
+# `ProcessPoolExecutor` instead of walking files one at a time.
 _PARALLEL_FILE_THRESHOLD = 20
 
 
@@ -281,8 +281,8 @@ def run(
     """Check every file in ``files``.
 
     Sequential when ``len(files) <= parallel_threshold`` or ``jobs == 1``; above
-    that threshold a ``ProcessPoolExecutor`` checks files across worker processes
-    (PLAN.md section 3.6). ``jobs=None`` (the CLI default) picks a worker count
+    that threshold a ``ProcessPoolExecutor`` checks files across worker processes.
+    ``jobs=None`` (the CLI default) picks a worker count
     automatically from ``os.cpu_count()``, capped at the file count. Diagnostics
     and failures come back sorted/ordered identically to the sequential path
     regardless of which path ran.
@@ -298,7 +298,7 @@ def run(
 
 
 def format_text(diagnostics: Sequence[Diagnostic]) -> str:
-    """``path:line:col rule-id message`` -- one diagnostic per line (PLAN.md FR-4)."""
+    """``path:line:col rule-id message`` -- one diagnostic per line."""
     return "\n".join(
         f"{diagnostic.path}:{diagnostic.line}:{diagnostic.col}"
         f" {diagnostic.rule_id} {diagnostic.message}"
@@ -307,7 +307,7 @@ def format_text(diagnostics: Sequence[Diagnostic]) -> str:
 
 
 def format_json(diagnostics: Sequence[Diagnostic]) -> str:
-    """A single JSON array document, keys and sort order per PLAN.md FR-4.
+    """A single JSON array document, keys and sort order per FR-4.
 
     Diagnostics arrive already sorted by ``(path, line, col, rule_id)`` -- see
     ``RunOutcome`` -- so this only shapes each one into the exact key set FR-4

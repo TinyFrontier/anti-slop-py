@@ -1,6 +1,6 @@
 """``no-shape-in-symbol-names`` -- reject a banned term in a *declared* name.
 
-PLAN.md section 3.4, row 9. A name like ``compute_shape`` or ``board_shape`` names
+A name like ``compute_shape`` or ``board_shape`` names
 what a value *looks like* (its structural shape) instead of what it *is* in the
 domain -- a slop name that forces every reader to reconstruct intent from a
 structural description. The configurable ``terms`` option (default ``("shape",)``)
@@ -29,8 +29,8 @@ declared name: ``self.shape = value`` (an ``ast.Attribute`` assignment target) a
 any attribute access such as ``array.shape`` (never a declaration to begin with).
 String contents are never inspected -- only the AST's own name-carrying nodes.
 
-Known limitations (accepted per PLAN.md section 3.4, row 9 and section 6 -- final
-term list is a phase-5 tuning decision, not a phase-1 concern):
+Known limitations (final term list is a phase-5 tuning decision, not a phase-1
+concern):
 
 * ``match``/``case`` capture patterns (``case shape:``, ``case Point(x=shape):``)
   bind new names but are not walked by this rule.

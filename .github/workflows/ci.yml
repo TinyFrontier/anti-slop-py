@@ -31,7 +31,7 @@ jobs:
       - name: Types
         run: .venv/bin/ty check src/ tests/ scripts/
 
-      # Dogfooding (PLAN.md section 3.6): the linter's own code obeys its own rules.
+      # Dogfooding: the linter's own code obeys its own rules.
       - name: Self-lint
         run: |
           .venv/bin/python -m anti_slop

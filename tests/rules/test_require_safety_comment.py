@@ -1,4 +1,4 @@
-"""Tests for the ``require-safety-comment`` rule (PLAN.md section 3.4, row 15).
+"""Tests for the ``require-safety-comment`` rule.
 
 Every snippet lives inside a string literal, so the directives written here are
 comments of the *analysed* snippet, never comments of this test file: ``tokenize``

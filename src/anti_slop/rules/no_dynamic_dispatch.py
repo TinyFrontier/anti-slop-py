@@ -1,5 +1,5 @@
 """``no-dynamic-dispatch`` -- reject dispatch by namespace lookup or by a runtime
-attribute/method name (PLAN.md section 3.4, row 7; port of ``no-reflect-apply``).
+attribute/method name (port of ``no-reflect-apply``).
 
 TypeScript's ``Reflect.apply`` invokes a function chosen by a string at runtime, with
 nothing enumerating what could actually run. Python offers two equivalent escape

@@ -1,4 +1,4 @@
-"""RuleTester-style harness: run one rule over a snippet (PLAN.md FR-6).
+"""RuleTester-style harness: run one rule over a snippet.
 
 ``assert_valid`` and ``assert_invalid`` drive the real engine -- comment map,
 walker, context, suppressions -- with a single rule enabled, so a rule test

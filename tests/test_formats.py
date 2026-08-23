@@ -1,8 +1,7 @@
 """Machine output formats, parallel walk, and the pre-commit hook manifest.
 
-PLAN.md section 5, phase 3: ``--format json`` / ``--format github`` (FR-4), a
-``ProcessPoolExecutor`` file walk above the parallel threshold, and
-``.pre-commit-hooks.yaml``.
+``--format json`` / ``--format github`` (FR-4), a ``ProcessPoolExecutor`` file walk
+above the parallel threshold, and ``.pre-commit-hooks.yaml``.
 """
 
 from __future__ import annotations
@@ -286,7 +285,7 @@ def test_pre_commit_hooks_manifest_has_the_expected_structure() -> None:
     manifest_path = REPO_ROOT / ".pre-commit-hooks.yaml"
     text = manifest_path.read_text(encoding="utf-8")
 
-    # Hand-rolled structural smoke checks (PLAN.md's own zero-dependency rule
+    # Hand-rolled structural smoke checks (this project's own zero-dependency rule
     # applies to the repo's dev tooling too: no PyYAML in this test). A single
     # hook, list-of-one-mapping shape: exactly one top-level `- id:` entry.
     assert text.startswith("- id: anti-slop\n")

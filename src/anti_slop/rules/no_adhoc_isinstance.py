@@ -1,5 +1,5 @@
 """``no-adhoc-isinstance`` -- reject ``isinstance``/``issubclass`` branching outside a
-type-guard function (PLAN.md section 3.4, row 8; port of ``no-runtime-typeof``).
+type-guard function (port of ``no-runtime-typeof``).
 
 TypeScript's ``typeof``-narrowing is ad hoc: it re-derives a claim about a value's
 shape at the exact point it is used, instead of deciding it once at a boundary.
@@ -37,7 +37,7 @@ resolution (``scopes.py``, phase 2b) a local variable or parameter that shadows
 ``isinstance``/``issubclass`` is indistinguishable from the builtin and is still
 flagged; this is a known, accepted limitation until scope resolution lands.
 
-Known limitations (PLAN.md section 6), left for suppressions or later phases:
+Known limitations, left for suppressions or later phases:
 
 * ``match``/``case`` class patterns (``case Point(x=x, y=y):``) are structural
   pattern matching -- legitimate branching on shape -- and are not walked by this

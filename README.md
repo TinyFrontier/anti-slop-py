@@ -18,11 +18,11 @@ file, the same "AST plus scopes, nothing heavier" discipline the original Oxlint
 plugin follows.
 
 Port of [dmmulroy/anti-slop](https://github.com/dmmulroy/anti-slop) (an Oxlint plugin
-for TypeScript) to Python semantics. See `PLAN.md` for the full specification.
+for TypeScript) to Python semantics.
 
 ## Status
 
-All 15 core rules are implemented (`PLAN.md` section 3.4), with the full valid/invalid
+All 15 core rules are implemented, with the full valid/invalid
 test matrix from section 3.6 and self-lint clean on this repository's own source. The
 opt-in `fastapi` contrib group (section 3.5) has not landed; `no-adhoc-isinstance` is
 turned off in this repository's own `pyproject.toml` for the reason recorded there —
@@ -313,12 +313,12 @@ install report.
   there is no import resolution to tell them apart — this can only produce a false
   positive, never a false negative on the real `typing.Any`.
 - **`no-module-mocking` on an existing test suite.** In both repositories used for
-  field validation (`PLAN.md` section 5, phase 5), 100% of `no-module-mocking` hits
+  field validation on two production services, 100% of `no-module-mocking` hits
   were in tests already built around `mock.patch`/`monkeypatch.setattr` — hundreds of
   hits on a codebase adopting anti-slop after the fact. Turn it on with a migration
   plan to dependency injection, not as a same-day blocker. In FastAPI projects,
   `app.dependency_overrides` is the native seam to migrate onto; the `fastapi`
-  contrib group (`PLAN.md` section 3.5) is planned to reference that recipe directly
+  contrib group is planned to reference that recipe directly
   from `no-module-mocking`'s own message.
 - **`no-shape-in-symbol-names` and scientific/ML vocabulary.** The default term list
   is `["shape"]`. On the two field repositories this produced 11–14 hits each, all

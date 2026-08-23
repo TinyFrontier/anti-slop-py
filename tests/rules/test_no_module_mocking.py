@@ -1,4 +1,4 @@
-"""Tests for the ``no-module-mocking`` rule (PLAN.md section 3.4, row 4)."""
+"""Tests for the ``no-module-mocking`` rule."""
 
 from __future__ import annotations
 

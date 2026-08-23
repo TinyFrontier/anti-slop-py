@@ -1,4 +1,4 @@
-"""Tests for the ``no-shape-in-symbol-names`` rule (PLAN.md section 3.4, row 9)."""
+"""Tests for the ``no-shape-in-symbol-names`` rule."""
 
 from __future__ import annotations
 

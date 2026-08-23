@@ -1,4 +1,4 @@
-"""Tests for ``[tool.anti-slop]`` parsing (PLAN.md FR-2)."""
+"""Tests for ``[tool.anti-slop]`` parsing."""
 
 from __future__ import annotations
 

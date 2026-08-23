@@ -1,4 +1,4 @@
-"""Lexical name resolution: what does *this* name mean *here* (PLAN.md section 4).
+"""Lexical name resolution: what does *this* name mean *here*.
 
 A rule that only pattern-matches syntax cannot tell ``patch("pkg.mod.fn")`` (the
 ``unittest.mock`` escape hatch) from a local helper that happens to be called
@@ -369,7 +369,7 @@ def scope_table_for(context: RuleContext, node: ast.AST) -> ScopeTable:
 
 # One table per parsed module, dropped as soon as the tree is. Building twice under a
 # race is harmless -- a table is immutable once built -- but the mapping itself is
-# guarded, since a future parallel runner (PLAN.md phase 3) may share this process.
+# guarded, since a future parallel runner (phase 3) may share this process.
 _CACHE: WeakKeyDictionary[ast.Module, ScopeTable] = WeakKeyDictionary()
 _CACHE_LOCK = threading.Lock()
 

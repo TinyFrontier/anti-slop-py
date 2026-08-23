@@ -1,4 +1,4 @@
-"""Tests for the ``no-known-value-widening`` rule (PLAN.md section 3.4, row 3)."""
+"""Tests for the ``no-known-value-widening`` rule."""
 
 from __future__ import annotations
 

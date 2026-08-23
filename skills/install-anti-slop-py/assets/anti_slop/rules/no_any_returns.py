@@ -1,4 +1,4 @@
-"""``no-any-returns`` -- reject a return contract of ``Any`` (PLAN.md section 3.4, row 11).
+"""``no-any-returns`` -- reject a return contract of ``Any``.
 
 Flags a return annotation that is directly ``Any``, and also ``Awaitable[Any]`` /
 ``Coroutine[..., Any]`` -- an async contract whose *result* type is erased to ``Any``

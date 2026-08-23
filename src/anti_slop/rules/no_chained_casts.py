@@ -1,6 +1,6 @@
 """``no-chained-casts`` -- reject a ``typing.cast`` whose value is itself a ``cast``.
 
-PLAN.md section 3.4, row 1 (port of ``no-chained-type-assertions``). A single
+Port of ``no-chained-type-assertions``. A single
 ``cast(Target, value)`` already asks the reader to trust an unproven claim; wrapping
 another ``cast`` around it compounds that trust without adding evidence -- it just
 makes the type checker agree with the previous, equally unproven claim. The value
@@ -12,7 +12,7 @@ Callee detection is deliberately broad, matching the plan: a bare name ``cast`` 
 known false-positive surface -- unrelated ``.cast`` methods such as SQLAlchemy's
 ``cast()`` helper or a builder method literally named ``cast``). Narrowing this to
 imports actually resolving to ``typing.cast`` needs scope resolution, which is out of
-reach for this syntax-only rule; see PLAN.md section 3.2 (``scopes.py``, phase 2).
+reach for this syntax-only rule (``scopes.py``, phase 2).
 
 The value argument is the second positional argument, or the ``val`` keyword
 argument, mirroring ``typing.cast(typ, val)``'s signature. Parentheses are invisible

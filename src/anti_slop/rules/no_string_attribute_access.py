@@ -1,5 +1,5 @@
 """``no-string-attribute-access`` -- reject ``getattr``/``setattr``/``delattr`` calls
-(PLAN.md section 3.4, row 6; port of ``no-reflect-get``).
+(port of ``no-reflect-get``).
 
 TypeScript's ``Reflect.get`` reaches an attribute through a string name instead of
 static property access; Python's equivalent reflective trio is the builtins
@@ -31,8 +31,7 @@ Callee detection matches only the bare builtin names ``getattr``/``setattr``/
 name argument is always the second *positional* argument (none of the three builtins
 accept keyword arguments in CPython). ``hasattr`` is deliberately never touched by
 this rule: it is a plain existence check, not an attribute *access*, and is left as a
-candidate for the opt-in ``strictness`` contrib group (PLAN.md section 3.5,
-``no-hasattr-narrowing``).
+candidate for the opt-in ``strictness`` contrib group (``no-hasattr-narrowing``).
 
 Without scope resolution (``scopes.py``, phase 2b) a local variable or parameter that
 shadows ``getattr``/``setattr``/``delattr`` is indistinguishable from the builtin and

@@ -1,4 +1,4 @@
-"""Tests for the ``no-string-attribute-access`` rule (PLAN.md section 3.4, row 6)."""
+"""Tests for the ``no-string-attribute-access`` rule."""
 
 from __future__ import annotations
 

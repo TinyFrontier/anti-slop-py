@@ -1,6 +1,6 @@
 """``require-safety-comment`` -- every cast and every checker suppression states its invariant.
 
-PLAN.md section 3.4, row 15 (port of ``require-safety-comment-for-type-assertion``).
+Port of ``require-safety-comment-for-type-assertion``.
 A ``typing.cast`` and a ``# type: ignore`` are the same move written two ways: both
 tell the checker "accept this, I have proof you cannot see". The proof is the whole
 point, and it is exactly what disappears when an agent reaches for either one to make
@@ -8,8 +8,8 @@ a red line go away. This rule demands the proof be written down as
 ``# SAFETY: <invariant>`` -- the invariant the checker cannot express, verified by a
 human or by code the checker cannot follow.
 
-There are no exceptions. TypeScript's ``as const`` has no Python counterpart (PLAN.md
-section 3.4, callout after the table), and ``cast`` is unsafe by construction: unlike
+There are no exceptions. TypeScript's ``as const`` has no Python counterpart, and
+``cast`` is unsafe by construction: unlike
 ``isinstance``, it checks nothing at runtime, it only silences the checker.
 
 Three independent defects are reported:
@@ -38,7 +38,7 @@ The last check is deliberately independent of the ``# SAFETY:`` check, so a bare
 invariant, once for the missing code. They are separate defects with separate fixes.
 
 Not a checker suppression: anti-slop's own ``# anti-slop: ignore[rule-id]``. It names
-a rule of *this* linter, is already required to name it (PLAN.md FR-3), and is parsed
+a rule of *this* linter, is already required to name it, and is parsed
 by a different directive grammar entirely.
 
 Known limitation, shared with ``no-chained-casts``: callee detection is syntactic --

@@ -1,6 +1,6 @@
 """``no-known-value-widening`` -- reject a literal value under an `Any`/`object` annotation.
 
-PLAN.md section 3.4, row 3 (port of ``no-known-value-widening``). This is the phase-1
+Port of ``no-known-value-widening``. This is the phase-1
 base case only: it flags an ``ast.AnnAssign`` whose annotation is ``Any`` or
 ``object`` and whose value is a syntactic literal (``ast.Dict``, ``ast.List``,
 ``ast.Set``, ``ast.Tuple`` or ``ast.Constant``). The value's shape is known right at
@@ -12,7 +12,7 @@ mapped/index-signature type, on the theory that TypeScript erases literal keys p
 that boundary. That half of the rule does **not** port: Python's type checkers do not
 infer literal dict keys in the first place, so ``handlers: dict[str, Handler] = {...}``
 is already idiomatic and stays unflagged -- there is no narrower-but-still-lossy type
-to compare against, only ``Any``/``object`` (see PLAN.md section 3.4, row 3 note).
+to compare against, only ``Any``/``object``.
 
 Two deliberate exclusions, both because "syntactic literal" is a purely
 AST-node-type check rather than a "provably constant" check:

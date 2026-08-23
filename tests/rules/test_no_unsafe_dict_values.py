@@ -1,4 +1,4 @@
-"""Tests for the ``no-unsafe-dict-values`` rule (PLAN.md section 3.4, row 13)."""
+"""Tests for the ``no-unsafe-dict-values`` rule."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Tests for lexical name resolution (``engine/scopes.py``, PLAN.md section 4)."""
+"""Tests for lexical name resolution (``engine/scopes.py``)."""
 
 from __future__ import annotations
 

@@ -1,6 +1,6 @@
 """anti-slop-py -- an opinionated linter for low-evidence Python patterns.
 
-This module is the registry of core rules. Opt-in groups (PLAN.md section 3.5) live
+This module is the registry of core rules. Opt-in groups live
 under ``anti_slop.contrib`` and are never registered here.
 """
 

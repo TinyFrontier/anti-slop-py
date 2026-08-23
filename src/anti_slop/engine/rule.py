@@ -3,7 +3,7 @@
 A rule is data, not a class hierarchy: an id, agent-executable messages, an option
 schema, and a tuple of node-type -> handler bindings. The walker (``walker.py``)
 collects the bindings of every enabled rule and dispatches one AST pass to all of
-them at once (PLAN.md FR-5).
+them at once.
 """
 
 from __future__ import annotations
@@ -109,7 +109,7 @@ class Rule:
     """A rule definition.
 
     ``messages`` maps a message id to a ``str.format`` template; every template must
-    say what to do *instead*, not merely that something is forbidden (PLAN.md 1.2).
+    say what to do *instead*, not merely that something is forbidden.
     """
 
     id: str

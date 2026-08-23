@@ -1,4 +1,4 @@
-"""Tests for the ``no-chained-casts`` rule (PLAN.md section 3.4, row 1)."""
+"""Tests for the ``no-chained-casts`` rule."""
 
 from __future__ import annotations
 

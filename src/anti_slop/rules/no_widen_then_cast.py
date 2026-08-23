@@ -1,7 +1,7 @@
 """``no-widen-then-cast`` -- reject "widen the type, then cast it back".
 
-PLAN.md section 3.4, row 14 (port of ``no-widen-then-assert``, the longest rule of the
-original). The pattern is a three-step local flow inside one scope::
+Port of ``no-widen-then-assert``, the longest rule of the original. The pattern is a
+three-step local flow inside one scope::
 
     u: User = load()          # 1. a binding with a narrow, proven type
     raw: Any = u              # 2. an explicit widening of that binding

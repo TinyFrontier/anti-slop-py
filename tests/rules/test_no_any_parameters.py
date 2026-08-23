@@ -1,4 +1,4 @@
-"""Tests for the ``no-any-parameters`` rule (PLAN.md section 3.4, row 10)."""
+"""Tests for the ``no-any-parameters`` rule."""
 
 from __future__ import annotations
 
