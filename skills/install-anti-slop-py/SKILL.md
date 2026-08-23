@@ -221,6 +221,11 @@ layout and tooling.
    A suppression is legitimate only where the rule's own recipe does not apply, it names
    the rule id, and the reason is written next to it.
 
+   In a codebase with substantial pre-existing findings, staged adoption is the honest
+   middle ground: set the architectural rules (see the README's "Opinionated by design"
+   section) to `"warn"` so they report without failing the run, keep the escape-hatch
+   rules at `"error"`, and record the plan for promoting warns to errors in the report.
+
 8. Review the final diff and report:
    - the vendored path and how to run it,
    - the configuration added, with `include`/`exclude` decisions,

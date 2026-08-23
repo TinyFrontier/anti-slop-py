@@ -87,7 +87,12 @@ exclude = [".venv/**", "tools/anti_slop/**"]
 
 [tool.anti-slop.rules]
 no-object-parameters = { level = "error", allow-object = false }
+no-adhoc-isinstance = "warn"   # levels: "error" | "warn" | "off"
 ```
+
+A `warn`-level rule reports its diagnostics (marked `warning:`) but does not fail
+the run: warn-only findings exit 0. Use it to stage contested rules during adoption
+(see "Opinionated by design" below).
 
 Suppress deliberately, and always by rule id:
 
@@ -429,6 +434,44 @@ When the install skill finds ruff in the target repository, it turns off the
 duplicate ruff rules (`ANN401`, `B009`, `B010`, `PGH003`) in favor of the anti-slop
 equivalents — wider coverage, agent-executable messages — and records that in the
 install report.
+
+## Opinionated by design
+
+**anti-slop is intentionally opinionated. Some rules encode architectural
+preferences rather than universal Python correctness.** The tool is executable
+architectural policy for the places ordinary linters and type checkers stay silent —
+not a claim that every flagged construct is objectively wrong. Defaults preserve
+that policy; the project is built so a team changes them without forking: the copy
+is vendored, every rule takes a per-rule level, and every finding is suppressible
+by rule id.
+
+The fifteen core rules split into two tiers.
+
+**Escape-hatch rules** ban constructs whose main effect is to discard evidence the
+type checker already had. These are near-universal — enable them first, everywhere:
+`no-any-parameters`, `no-any-returns`, `no-any-type-aliases`, `no-chained-casts`,
+`no-conditional-empty-dict-spread`, `no-dynamic-dispatch`,
+`no-known-value-widening`, `no-unsafe-dict-values`, `no-widen-then-cast`,
+`require-safety-comment`.
+
+**Architectural rules** encode a policy that reasonable teams reject wholesale, and
+their cost varies by codebase. `no-adhoc-isinstance` deserves the bluntest wording:
+its default is intentionally stricter than idiomatic Python in many codebases — a
+plain `if isinstance(value, Foo)` outside a type-guard function is flagged even
+with the default `allow-in-type-guards = true`. This repository itself sets the
+rule to `off`, because an AST analyzer's domain objects are AST node classes and
+branching on them is exactly what the rule's recipe prescribes. That is the
+configuration model working as intended, not an exception to it.
+
+Suggested postures by codebase type:
+
+| Rule | Business backend | Framework / library | ML / scientific |
+|---|---|---|---|
+| `no-adhoc-isinstance` | `error` or `warn` | `off` or `warn` | `warn` |
+| `no-module-mocking` | `error` for new code, suppressions on legacy | `warn` or `off` | `warn` |
+| `no-object-parameters` | `error` | `warn` | `warn` |
+| `no-string-attribute-access` | `error` | `off` or `warn` (metaprogramming) | `warn` |
+| `no-shape-in-symbol-names` | `error` | `warn` | `off`, or `terms = []` |
 
 ## Security model
 
