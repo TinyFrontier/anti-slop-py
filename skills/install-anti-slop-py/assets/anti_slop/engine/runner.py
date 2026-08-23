@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
@@ -83,7 +84,11 @@ def check_source(
         return ()
 
     try:
-        tree = ast.parse(source, filename=str(path))
+        # A linted file's own SyntaxWarnings (e.g. invalid escape sequences) are
+        # its author's concern, not this tool's output; keep stderr clean.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", SyntaxWarning)
+            tree = ast.parse(source, filename=str(path))
     except SyntaxError as error:
         line = error.lineno if error.lineno is not None else 1
         col = error.offset if error.offset is not None else 1
@@ -161,7 +166,7 @@ def collect_files(roots: Iterable[Path], config: Config) -> tuple[Path, ...]:
         for candidate in candidates:
             if candidate.suffix not in _PYTHON_SUFFIXES:
                 continue
-            if _is_excluded(candidate, config, path_filter):
+            if _is_excluded(candidate, root, config, path_filter):
                 continue
             resolved = candidate.resolve()
             if resolved in seen:
@@ -173,11 +178,19 @@ def collect_files(roots: Iterable[Path], config: Config) -> tuple[Path, ...]:
     return tuple(found)
 
 
-def _is_excluded(path: Path, config: Config, path_filter: PathFilter) -> bool:
+def _is_excluded(path: Path, root: Path, config: Config, path_filter: PathFilter) -> bool:
+    resolved = path.resolve()
     try:
-        relative = path.resolve().relative_to(config.root.resolve())
+        relative = resolved.relative_to(config.root.resolve())
     except ValueError:
-        return False
+        # The file lives outside the config root (linting another repository).
+        # Exclude patterns must still apply, so match against the scanned root:
+        # otherwise defaults like `.venv/**` silently stop working out of tree.
+        base = root if root.is_dir() else root.parent
+        try:
+            relative = resolved.relative_to(base.resolve())
+        except ValueError:
+            return False
     return path_filter.excludes(PurePosixPath(relative.as_posix()))
 
 

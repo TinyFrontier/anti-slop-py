@@ -214,3 +214,40 @@ def test_unsupported_format_exits_two(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as excinfo:
         main([str(module), "--config", str(config), "--format", "xml"])
     assert excinfo.value.code == 2
+
+
+def test_default_excludes_apply_outside_the_config_root(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Linting another repository must still skip its `.venv` (phase-5 field bug)."""
+    config, _ = make_project(tmp_path, CLEAN)
+
+    other_repo = tmp_path / "elsewhere" / "target-repo"
+    site = other_repo / ".venv" / "lib" / "site-packages"
+    site.mkdir(parents=True)
+    (site / "vendored.py").write_text(
+        textwrap.dedent(VIOLATION).lstrip("\n"), encoding="utf-8"
+    )
+    owned = other_repo / "app.py"
+    owned.write_text(textwrap.dedent(VIOLATION).lstrip("\n"), encoding="utf-8")
+
+    code = main([str(other_repo), "--config", str(config)])
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert "app.py" in captured.out
+    assert ".venv" not in captured.out
+
+
+def test_linted_file_syntax_warnings_stay_off_stderr(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A target file's own SyntaxWarning (bad escape) is not this tool's output."""
+    config, module = make_project(tmp_path, CLEAN)
+    module.write_text('PATTERN = "\\d+"\n', encoding="utf-8")
+
+    code = main([str(module), "--config", str(config)])
+    captured = capsys.readouterr()
+
+    assert code == 0
+    assert captured.err == ""
