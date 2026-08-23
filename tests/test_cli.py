@@ -198,8 +198,19 @@ def test_malformed_suppression_exits_two(
     assert "must name the rule" in captured.err
 
 
+def test_non_positive_jobs_exits_two(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config, module = make_project(tmp_path, CLEAN)
+    code = main([str(module), "--config", str(config), "--jobs", "0"])
+    captured = capsys.readouterr()
+
+    assert code == 2
+    assert "--jobs must be a positive integer" in captured.err
+
+
 def test_unsupported_format_exits_two(tmp_path: Path) -> None:
     config, module = make_project(tmp_path, CLEAN)
     with pytest.raises(SystemExit) as excinfo:
-        main([str(module), "--config", str(config), "--format", "json"])
+        main([str(module), "--config", str(config), "--format", "xml"])
     assert excinfo.value.code == 2

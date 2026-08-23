@@ -1,0 +1,11 @@
+- id: anti-slop
+  name: anti-slop
+  description: >-
+    Reject low-evidence, low-signal Python patterns -- Any/object escape
+    hatches, cast cascades, unexplained type: ignore, string-target module
+    mocking, ad-hoc isinstance narrowing. Every diagnostic says what to write
+    instead.
+  entry: anti-slop
+  language: python
+  types: [python]
+  require_serial: false

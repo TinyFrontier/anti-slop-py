@@ -9,10 +9,12 @@ from pathlib import Path
 
 from anti_slop import CORE_RULES, __version__
 from anti_slop.engine.config import Config, ConfigError, load_config
-from anti_slop.engine.rule import BoolOption, Rule, StrListOption
+from anti_slop.engine.rule import BoolOption, Diagnostic, Rule, StrListOption
 from anti_slop.engine.runner import (
     EXIT_ERROR,
     collect_files,
+    format_github,
+    format_json,
     format_text,
     resolve_roots,
     run,
@@ -22,8 +24,7 @@ __all__ = ["cli", "main"]
 
 PROG = "anti-slop"
 
-# `json` and `github` land in phase 3 (PLAN.md section 5).
-_FORMATS = ("text",)
+_FORMATS = ("text", "json", "github")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -66,6 +67,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="list the registered rules with their options and exit",
     )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=None,
+        metavar="N",
+        help=(
+            "worker processes for the file walk; files above the parallel"
+            " threshold stay sequential only with --jobs 1 (default: auto)"
+        ),
+    )
     parser.add_argument("--version", action="version", version=f"{PROG} {__version__}")
     return parser
 
@@ -83,21 +94,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         rules = _select_rules(config, args.rules)
         roots = resolve_roots(args.paths, config)
         files = collect_files(roots, config)
+        jobs = _validate_jobs(args.jobs)
     except ConfigError as error:
         print(f"{PROG}: {error}", file=sys.stderr)
         return EXIT_ERROR
 
     try:
-        outcome = run(files, rules, config.rules)
+        outcome = run(files, rules, config.rules, jobs=jobs)
     except ConfigError as error:
         print(f"{PROG}: {error}", file=sys.stderr)
         return EXIT_ERROR
 
-    if outcome.diagnostics:
-        print(format_text(outcome.diagnostics))
+    _print_diagnostics(outcome.diagnostics, args.output_format)
     for failure in outcome.failures:
         print(f"{PROG}: {failure}", file=sys.stderr)
     return outcome.exit_code()
+
+
+def _validate_jobs(jobs: int | None) -> int | None:
+    if jobs is not None and jobs < 1:
+        message = f"--jobs must be a positive integer, got {jobs}"
+        raise ConfigError(message)
+    return jobs
+
+
+def _print_diagnostics(diagnostics: Sequence[Diagnostic], output_format: str) -> None:
+    if output_format == "json":
+        print(format_json(diagnostics))
+        return
+    if not diagnostics:
+        return
+    if output_format == "github":
+        print(format_github(diagnostics))
+        return
+    print(format_text(diagnostics))
 
 
 def _select_rules(config: Config, requested: Sequence[str] | None) -> tuple[Rule, ...]:
