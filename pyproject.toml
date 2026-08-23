@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anti-slop-py"
+version = "0.1.0"
+description = "Opinionated Python linter that rejects low-evidence, low-signal patterns."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+# Zero runtime dependencies: a vendored copy runs as `python -m anti_slop`
+# without installing anything. See PLAN.md section 2.2.
+dependencies = []
+
+[project.scripts]
+anti-slop = "anti_slop.__main__:cli"
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "ty==0.0.74"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anti_slop"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-q"
+
+[tool.ty.environment]
+python-version = "3.12"
+root = ["./src", "./tests"]
+
+# anti-slop lints itself (dogfooding, PLAN.md section 3.6).
+[tool.anti-slop]
+include = ["src", "tests"]
+exclude = [".venv/**", "**/__pycache__/**"]
+
+[tool.anti-slop.rules]
+no-object-parameters = "error"
