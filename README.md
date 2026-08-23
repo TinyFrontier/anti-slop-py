@@ -1,5 +1,7 @@
 # anti-slop-py
 
+[![skills.sh](https://skills.sh/b/TinyFrontier/anti-slop-py)](https://skills.sh/TinyFrontier/anti-slop-py)
+
 A standalone, zero-dependency Python linter that rejects **low-evidence, low-signal
 patterns** — the ones coding agents leave behind when they reach for an escape hatch
 instead of naming a contract: `Any` and `object` parameters, `cast` cascades,
@@ -35,7 +37,16 @@ anti-slop-py is vendored, not depended upon. `skills/install-anti-slop-py/` is t
 procedure for a coding agent: inspect the target repository, copy the linter in, merge
 `[tool.anti-slop]`, wire up pre-commit and CI, hand Ruff its duplicate rules
 (`ANN401`, `B009`, `B010`, `PGH003`) over to anti-slop, run the linter, report the diff.
-Point the agent at `skills/install-anti-slop-py/SKILL.md`, or copy the files by hand:
+
+Add the skill to your agent with [skills](https://skills.sh):
+
+```bash
+npx skills add TinyFrontier/anti-slop-py --skill install-anti-slop-py
+```
+
+then ask the agent to install anti-slop in the current repository. Alternatively,
+point the agent at `skills/install-anti-slop-py/SKILL.md` directly, or copy the
+files by hand:
 
 ```bash
 cd /path/to/target-repo
