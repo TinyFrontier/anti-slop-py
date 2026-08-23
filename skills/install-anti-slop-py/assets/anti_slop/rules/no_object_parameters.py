@@ -9,6 +9,11 @@ want to stop at that minimum set ``allow-object = true``.
 
 Built-in exception: the comparison dunders ``__eq__``, ``__ne__`` and
 ``__contains__``, where typeshed's own convention requires ``other: object``.
+
+Field-tuned in phase 5: ``*args: object`` / ``**kwargs: object`` is the
+typing-docs-blessed spelling for "accepts anything and never touches it" (stub
+callbacks, pass-through wrappers), so variadic parameters are exempt by default;
+``allow-variadic-object = false`` restores the strict reading.
 """
 
 from __future__ import annotations
@@ -43,6 +48,15 @@ _ALLOW_OBJECT = BoolOption(
     ),
 )
 
+_ALLOW_VARIADIC_OBJECT = BoolOption(
+    name="allow-variadic-object",
+    default=True,
+    description=(
+        "Allow `*args: object` / `**kwargs: object` -- the typing-docs-blessed"
+        " spelling for accepting arbitrary arguments without touching them."
+    ),
+)
+
 
 def _check_function(
     context: RuleContext, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -51,7 +65,10 @@ def _check_function(
         return
     if node.name in _EXEMPT_DUNDERS and _is_method(context, node):
         return
-    for parameter in _iter_parameters(node.args):
+    allow_variadic = context.bool_option(_ALLOW_VARIADIC_OBJECT.name)
+    for parameter, variadic in _iter_parameters(node.args):
+        if variadic and allow_variadic:
+            continue
         annotation = parameter.annotation
         if annotation is None:
             continue
@@ -60,15 +77,14 @@ def _check_function(
         context.report(parameter, "parameter", name=parameter.arg)
 
 
-def _iter_parameters(arguments: ast.arguments) -> Iterator[ast.arg]:
-    """Every declared parameter: positional-only, regular, ``*args``, keyword-only, ``**kwargs``."""
-    yield from arguments.posonlyargs
-    yield from arguments.args
+def _iter_parameters(arguments: ast.arguments) -> Iterator[tuple[ast.arg, bool]]:
+    """Every declared parameter, with a flag marking ``*args`` / ``**kwargs``."""
+    for parameter in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs):
+        yield parameter, False
     if arguments.vararg is not None:
-        yield arguments.vararg
-    yield from arguments.kwonlyargs
+        yield arguments.vararg, True
     if arguments.kwarg is not None:
-        yield arguments.kwarg
+        yield arguments.kwarg, True
 
 
 def _is_object_annotation(annotation: ast.expr) -> bool:
@@ -101,5 +117,5 @@ RULE = Rule(
         on(ast.FunctionDef, _check_function),
         on(ast.AsyncFunctionDef, _check_function),
     ),
-    options=(_ALLOW_OBJECT,),
+    options=(_ALLOW_OBJECT, _ALLOW_VARIADIC_OBJECT),
 )

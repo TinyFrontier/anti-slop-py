@@ -56,10 +56,6 @@ INVALID_SNIPPETS = [
     ("""
     async def save(value: object) -> None: ...
     """, 1),
-    # Star-args, both of them.
-    ("""
-    def dispatch(*args: object, **kwargs: object) -> None: ...
-    """, 2),
     # Positional-only and keyword-only parameters.
     ("""
     def dispatch(value: object, /, other: object, *, extra: object) -> None: ...
@@ -153,3 +149,30 @@ def test_unknown_option_is_rejected_by_the_harness() -> None:
             ["def save(value: object) -> None: ..."],
             options={"allow-anything": True},
         )
+
+
+def test_variadic_object_is_allowed_by_default() -> None:
+    assert_valid(
+        RULE,
+        [
+            "def stub(*args: object, **kwargs: object) -> bool: ...",
+            "async def _send(**_kwargs: object) -> None: ...",
+        ],
+    )
+
+
+def test_variadic_object_flagged_when_strict() -> None:
+    assert_invalid(
+        RULE,
+        "def stub(*args: object, **kwargs: object) -> bool: ...",
+        count=2,
+        options={"allow-variadic-object": False},
+    )
+
+
+def test_named_parameters_still_flagged_alongside_variadic() -> None:
+    assert_invalid(
+        RULE,
+        "def parse(raw: object, **kwargs: object) -> None: ...",
+        count=1,
+    )

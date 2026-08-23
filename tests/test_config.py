@@ -38,7 +38,7 @@ def test_missing_section_enables_every_rule_with_defaults(tmp_path: Path) -> Non
     assert config.source is None
     assert config.exclude == DEFAULT_EXCLUDE
     assert config.rules[RULE_ID].enabled is True
-    assert config.rules[RULE_ID].options == {"allow-object": False}
+    assert config.rules[RULE_ID].options["allow-object"] is False
 
 
 def test_level_error_and_off(tmp_path: Path) -> None:
@@ -63,7 +63,7 @@ def test_table_form_carries_level_and_options(tmp_path: Path) -> None:
     """)
     setting = config.rules[RULE_ID]
     assert setting.enabled is True
-    assert setting.options == {"allow-object": True}
+    assert setting.options["allow-object"] is True
 
 
 def test_table_form_defaults_to_error_when_level_is_omitted(tmp_path: Path) -> None:
