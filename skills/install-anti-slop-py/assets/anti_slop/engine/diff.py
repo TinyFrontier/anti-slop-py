@@ -98,10 +98,13 @@ class ChangedLines:
 def changed_lines(base: str, *, root: Path, committed: bool = False) -> ChangedLines:
     """The lines ``base``..working tree (or ``base``..``HEAD``) touched.
 
-    ``root`` is where the git queries run -- the configuration root, so that a run
-    from a subdirectory, or of a project nested inside a larger repository, resolves
-    the same repository the files being linted belong to. Paths come back resolved and
-    absolute, against the repository's own top level rather than ``root``.
+    ``root`` is where the git queries run. Callers pass a scan root -- a directory
+    being linted, or a linted file's parent -- NOT the configuration root: with an
+    external ``--config`` the two differ, and anchoring at the config would resolve
+    whatever repository happens to contain that directory instead of the one being
+    linted (see ``__main__._changed_for``, which also rejects scan roots spanning
+    more than one repository). Paths come back resolved and absolute, against the
+    repository's own top level rather than ``root``.
     """
     toplevel = _toplevel(root)
     merge_base = _merge_base(base, toplevel)
