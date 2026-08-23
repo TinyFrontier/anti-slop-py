@@ -41,12 +41,40 @@ VALID_SNIPPETS = [
     """
     def save(values: list[Any]) -> None: ...
     """,
-    # Alias resolution is phase 2's job: the plain (unannotated) `Assign` that
-    # defines the alias, and every later use of the alias name, are both untouched.
+    # An alias of a narrow dict type is exactly what this rule asks for.
     """
-    Metadata = dict[str, Any]
+    Metadata = dict[str, str]
 
     def save(payload: Metadata) -> None: ...
+    """,
+    # Mutually recursive aliases resolve to nothing: the cycle guard stops the chain
+    # instead of substituting forever.
+    """
+    A = B
+    B = A
+
+    def save(payload: A) -> None: ...
+    """,
+    # An alias imported from another module is not followed -- no cross-module
+    # inference anywhere in this linter.
+    """
+    from other.module import Metadata
+
+    def save(payload: Metadata) -> None: ...
+    """,
+    # An alias bound twice in the same scope proves nothing: there is no flow
+    # analysis to say which binding is live at the annotation.
+    """
+    Metadata = dict[str, Any]
+    Metadata = dict[str, str]
+
+    def save(payload: Metadata) -> None: ...
+    """,
+    # An annotated *variable* is not a type alias, so its value is not a type.
+    """
+    config: Mapping[str, str] = {}
+
+    def save(payload: config) -> None: ...
     """,
 ]
 
@@ -122,6 +150,59 @@ INVALID_SNIPPETS = [
     @retry(attempts=3)
     def save(values: dict[str, Any]) -> None: ...
     """, 1),
+    # Phase 2: a bare alias hides the same dict. The definition is a plain `Assign`,
+    # so the violation is reported where the name is used as a type.
+    ("""
+    Metadata = dict[str, Any]
+
+    def save(payload: Metadata) -> None: ...
+    """, 1),
+    # A chain of aliases, each of which was supposed to be narrowing something.
+    ("""
+    Metadata = dict[str, Any]
+    Payload = Metadata
+
+    def save(payload: Payload) -> None: ...
+    """, 1),
+    # The alias sits at the value position of a real dict annotation.
+    ("""
+    Value = Any
+
+    def save(values: dict[str, Value]) -> None: ...
+    """, 1),
+    # The alias is nested inside another container.
+    ("""
+    Metadata = dict[str, Any]
+
+    def save(batches: list[Metadata]) -> None: ...
+    """, 1),
+    # A PEP 695 alias declares its right-hand side a type, so it is reported at the
+    # definition as well as at the annotation that uses it.
+    ("""
+    type Metadata = dict[str, Any]
+
+    def save(payload: Metadata) -> None: ...
+    """, 2),
+    # Every use of the alias is its own violation.
+    ("""
+    Metadata = dict[str, Any]
+
+    def save(payload: Metadata) -> None: ...
+
+    def load() -> Metadata: ...
+    """, 2),
+    # An alias used in an `AnnAssign` annotation.
+    ("""
+    Metadata = Mapping[str, object]
+
+    config: Metadata = {}
+    """, 1),
+    # An alias defined and used inside a function body.
+    ("""
+    def build() -> None:
+        Metadata = dict[str, Any]
+        config: Metadata = {}
+    """, 1),
 ]
 
 
@@ -144,6 +225,35 @@ def test_message_names_the_annotation_and_the_value_type() -> None:
     assert "`dict[str, Any]`" in diagnostic.message
     assert "`Any`" in diagnostic.message
     assert "TypedDict" in diagnostic.message
+
+
+def test_alias_message_names_the_alias_and_what_it_resolves_to() -> None:
+    (diagnostic,) = assert_invalid(
+        RULE,
+        """
+        Metadata = dict[str, Any]
+
+        def save(payload: Metadata) -> None: ...
+        """,
+    )
+    assert "`Metadata`" in diagnostic.message
+    assert "`dict[str, Any]`" in diagnostic.message
+    assert "TypedDict" in diagnostic.message
+    # Anchored on the annotation that uses the alias, not on its definition.
+    assert (diagnostic.line, diagnostic.col) == (3, 19)
+
+
+def test_a_locally_narrowed_alias_shadows_the_module_one() -> None:
+    assert_valid(
+        RULE,
+        ["""
+        Metadata = dict[str, Any]
+
+        def build() -> None:
+            Metadata = dict[str, str]
+            config: Metadata = {}
+        """],
+    )
 
 
 def test_has_no_options() -> None:
