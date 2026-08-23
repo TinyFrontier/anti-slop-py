@@ -10,3 +10,4 @@ dist/
 *.egg-info/
 .coverage
 .DS_Store
+PLAN.md
