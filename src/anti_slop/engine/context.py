@@ -117,6 +117,7 @@ class RuleContext:
         line = node.lineno
         if self._comments.suppresses(line, self._rule.id):
             return
+        params = {name: _sanitize_fragment(value) for name, value in params.items()}
 
         end_line = node.end_lineno if node.end_lineno is not None else line
         end_col_offset = (
@@ -144,3 +145,21 @@ class RuleContext:
                 f" (known options: {known})"
             )
             raise LookupError(message) from error
+
+
+_FRAGMENT_LIMIT = 80
+
+
+def _sanitize_fragment(value: str) -> str:
+    """Cap and single-line a message fragment derived from scanned source.
+
+    Interpolated fragments -- identifiers, unparsed annotations -- come from
+    UNTRUSTED third-party code, and diagnostics are read by coding agents. A
+    fragment must never smuggle a multi-line block or an oversized payload into
+    agent-visible output: whitespace runs collapse to one space, and anything
+    longer than the cap is truncated with an ellipsis.
+    """
+    collapsed = " ".join(value.split())
+    if len(collapsed) > _FRAGMENT_LIMIT:
+        return collapsed[: _FRAGMENT_LIMIT - 1] + "…"
+    return collapsed
