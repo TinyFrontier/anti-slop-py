@@ -72,6 +72,7 @@ python scripts/sync_skill_assets.py --check   # CI guard, fails on drift
 ```bash
 python -m anti_slop src/            # check paths, or [tool.anti-slop].include
 python -m anti_slop --list-rules
+python -m anti_slop --explain no-widen-then-cast
 python -m anti_slop --rule no-object-parameters src/
 ```
 
@@ -83,7 +84,8 @@ Configure in `pyproject.toml`:
 [tool.anti-slop]
 include = ["src", "tests"]
 exclude = [".venv/**", "tools/anti_slop/**"]
-# groups = ["fastapi"]   # opt-in rule groups; off unless listed here
+# preset = "recommended"  # starting levels for the core rules; see "Presets"
+# groups = ["fastapi"]    # opt-in rule groups; off unless listed here
 
 [tool.anti-slop.rules]
 no-object-parameters = { level = "error", allow-object = false }
@@ -91,8 +93,9 @@ no-adhoc-isinstance = "warn"   # levels: "error" | "warn" | "off"
 ```
 
 A `warn`-level rule reports its diagnostics (marked `warning:`) but does not fail
-the run: warn-only findings exit 0. Use it to stage contested rules during adoption
-(see "Opinionated by design" below).
+the run: warn-only findings exit 0. Use it to stage contested rules during adoption —
+rule by rule here, or a whole tier at a time with a preset (see "Presets" below and
+"Opinionated by design").
 
 Suppress deliberately, and always by rule id:
 
@@ -103,6 +106,79 @@ def save(value: object) -> None:  # anti-slop: ignore[no-object-parameters]
 
 `# anti-slop: skip-file` (in the first 5 lines) skips a whole file. A suppression
 without a rule id is a configuration error, not a silent blanket opt-out.
+
+### Presets
+
+`preset` sets the starting level of every **core** rule at once, from the rule's own
+tier and confidence:
+
+```toml
+[tool.anti-slop]
+preset = "recommended"
+```
+
+| Preset | Escape-hatch rules | Architectural rules | Use it when |
+|---|---|---|---|
+| `strict` | `error` | `error` | the default posture — identical to naming no preset at all |
+| `recommended` | `error` | `warn` | adopting the tool: hatches block, policy reports |
+| `minimal` | `error`, high confidence only (`no-unsafe-dict-values` → `off`) | `off` | you want the indisputable subset and nothing else |
+| `legacy` | `warn` | `off` | a large existing codebase, before anything is cleaned up |
+
+`[tool.anti-slop.rules]` is applied on top and always wins, per rule — a preset is
+where a project starts, not a ceiling on what it can say afterwards. Setting only an
+option (`no-object-parameters = { allow-object = true }`) leaves the preset's level
+alone; naming a level replaces it. Omitting `preset` is not a preset: every rule
+starts at `error`, exactly as before presets existed. Rules of an opt-in group are
+never touched by a preset — they arrive with `groups` and are configured by name.
+
+### Explaining a rule
+
+`--explain <rule-id>` prints why a rule exists, in five sections — what it catches,
+why it matters, what to write instead, when to turn it off, and its known false
+positives:
+
+```bash
+python -m anti_slop --explain no-widen-then-cast
+python -m anti_slop --explain fastapi/no-state-attribute-access   # group not needed
+python -m anti_slop --explain no-widen-then-cast --format json
+```
+
+It describes a rule rather than a repository, so it needs no configuration and works
+for the rules of an opt-in group without enabling the group. An unknown id exits `2`
+and suggests the closest names.
+
+`--list-rules` shows each active rule's tier and confidence next to its summary, and
+`--list-rules --format json` emits the same catalogue as a stable machine-readable
+document — one object per rule with `id`, `summary`, `tier`, `confidence`,
+`default_level` (the level it runs at under the configuration that was loaded), `fix`
+(always `"none"`), `tags`, and `options`:
+
+```bash
+python -m anti_slop --list-rules --format json
+```
+
+One element of that array:
+
+```json
+{
+  "id": "no-unsafe-dict-values",
+  "summary": "Dict-like value types must name a domain type, not `Any`/`object`.",
+  "tier": "escape-hatch",
+  "confidence": "medium",
+  "default_level": "error",
+  "fix": "none",
+  "tags": ["typing", "dict"],
+  "options": []
+}
+```
+
+`confidence` says how much a finding can be trusted without reading the surrounding
+code: `high` — the construct itself is the defect; `medium` — detection depends on
+resolution this linter does only partially; `policy` — the construct is legal and
+idiomatic for some teams, and the finding states this project's chosen policy. `fix`
+is `"none"` on every rule and stays that way: the recipe is spelled out in the
+diagnostic, and a linter that rewrites code to satisfy its own rules becomes a
+generator of exactly the code it was built to reject.
 
 ## Rules
 
@@ -445,7 +521,9 @@ that policy; the project is built so a team changes them without forking: the co
 is vendored, every rule takes a per-rule level, and every finding is suppressible
 by rule id.
 
-The fifteen core rules split into two tiers.
+The fifteen core rules split into two tiers. The split is not just prose here: every
+rule declares its `tier` and `confidence` as machine-readable metadata, which is what
+`--list-rules`, `--explain` and the presets all read.
 
 **Escape-hatch rules** ban constructs whose main effect is to discard evidence the
 type checker already had. These are near-universal — enable them first, everywhere:
@@ -472,6 +550,13 @@ Suggested postures by codebase type:
 | `no-object-parameters` | `error` | `warn` | `warn` |
 | `no-string-attribute-access` | `error` | `off` or `warn` (metaprogramming) | `warn` |
 | `no-shape-in-symbol-names` | `error` | `warn` | `off`, or `terms = []` |
+
+The presets are the executable form of that table: `preset = "recommended"` is this
+posture in one line — escape hatches at `error`, architectural policy at `warn` —
+and `legacy` is the same idea for a codebase that cannot act on either yet. Start
+from a preset, then adjust the individual rules that matter for your domain; each
+rule's own `--explain` output carries the posture advice above under **When to
+disable**.
 
 ## Security model
 
@@ -522,11 +607,12 @@ instructions to follow.
 ## Output formats
 
 `--format text` (the default) prints `path:line:col rule-id message`, one
-diagnostic per line. Two machine-readable formats are also available, for CI:
+diagnostic per line. Three machine-readable formats are also available, for CI:
 
 ```bash
 python -m anti_slop --format json src/      # a single JSON array on stdout
 python -m anti_slop --format github src/    # GitHub Actions ::error annotations
+python -m anti_slop --format sarif src/     # a single SARIF 2.1.0 document
 ```
 
 `--format json` prints one JSON document — an array of objects with the keys
@@ -541,6 +627,34 @@ to annotate a pull request diff in GitHub Actions; nothing is printed on a clean
 run. `%`, `\r`, `\n` (and `:`, `,` in the field values) are escaped per GitHub's
 workflow-command rules, so a path or message containing them cannot corrupt the
 annotation.
+
+`--format sarif` prints one SARIF 2.1.0 document (schema:
+`docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json`),
+ready for tools that consume the OASIS format — GitHub code scanning among them.
+`tool.driver.rules` lists only the rules that produced a result, each carrying its
+summary, problem/recipe prose and `{tier, confidence, tags}` under `properties`; a
+result's `locations[].physicalLocation.artifactLocation.uri` is POSIX and relative
+to the configuration root, resolved against `originalUriBaseIds.SRCROOT`. Severity
+maps the same way as the other formats — `error` stays `"error"`, `warn` becomes
+`"warning"` — and, like `--format json`, an empty run still prints a complete,
+valid document rather than nothing:
+
+```json
+{
+  "version": "2.1.0",
+  "runs": [{
+    "tool": {"driver": {"name": "anti-slop",
+      "rules": [{"id": "no-object-parameters", "helpUri": "...#rules"}]}},
+    "originalUriBaseIds": {"SRCROOT": {"uri": "file:///abs/project/"}},
+    "results": [{"ruleId": "no-object-parameters", "ruleIndex": 0, "level": "error",
+      "locations": [{"physicalLocation": {
+        "artifactLocation": {"uri": "mod.py", "uriBaseId": "SRCROOT"}}}]}]
+  }]
+}
+```
+
+`--format sarif` describes a *run*, not a rule, so `--list-rules` and `--explain`
+still accept only `text`/`json` and reject it with exit code `2`, same as `github`.
 
 ## Parallel file walk
 

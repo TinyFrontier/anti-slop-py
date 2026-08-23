@@ -1,15 +1,5 @@
 """``fastapi/no-state-attribute-access`` -- reject the ``app.state`` grab bag.
 
-``app.state`` is Starlette's untyped attribute bag: it holds whatever some startup
-hook happened to put there, under whatever name, and nothing anywhere declares what
-that is. Every read of it is a dynamic attribute access on an object typed as a plain
-``object`` -- which is exactly why the core ``no-string-attribute-access`` rule
-drowns in it on a real FastAPI service (241 hits from ``app.state.*`` alone on one
-115k-line field repository). Nothing proves the attribute was ever set, nothing
-proves it holds what the line assumes, a typo surfaces as an ``AttributeError`` at
-request time, and a test can quietly reach into the same bag to hand a handler its
-collaborator without the handler ever declaring one.
-
 Flagged everywhere in the module -- handlers, startup hooks, middlewares, and tests
 alike, because the tests are where this pattern spreads:
 
@@ -35,7 +25,14 @@ import ast
 
 from anti_slop.contrib.fastapi._routes import is_fastapi_app, is_request_parameter
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_POLICY,
+    FIX_NONE,
+    TIER_FRAMEWORK,
+    Rule,
+    RuleMetadata,
+    on,
+)
 from anti_slop.engine.scopes import ScopeTable, scope_table_for
 
 __all__ = ["RULE", "RULE_ID"]
@@ -122,6 +119,49 @@ def _is_application_state(table: ScopeTable, base: ast.expr) -> bool:
             return False
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_FRAMEWORK,
+    confidence=CONFIDENCE_POLICY,
+    fix=FIX_NONE,
+    tags=("fastapi", "reflection"),
+    problem=(
+        "`app.state` is Starlette's untyped attribute bag: it holds whatever some"
+        " startup hook happened to put there, under whatever name, and nothing"
+        " anywhere declares what that is. Every read is a dynamic attribute access on"
+        " an object typed as a plain `object` -- nothing proves the attribute was"
+        " ever set or that it holds what the line assumes, and a typo or a missing"
+        " startup hook surfaces as an `AttributeError` at request time. Tests make it"
+        " worse by reaching into the same bag to hand a handler a collaborator the"
+        " handler never declared."
+    ),
+    recipe=(
+        "Provide the value through a dependency: a small provider function that"
+        " returns the typed object, injected where it is needed with"
+        " `Depends(get_thing)`. The handler then declares what it needs, the type is"
+        " checkable at every use, and a test replaces it with"
+        " `app.dependency_overrides[get_thing] = ...` rather than by writing into a"
+        " shared bag."
+    ),
+    when_to_disable=(
+        "The `fastapi` group is opt-in and off unless `groups = [\"fastapi\"]` names"
+        " it, so no preset ever turns this rule on. Its reason to exist is volume:"
+        " one 115k-line field service produced 241 core `no-string-attribute-access`"
+        " hits from `app.state` alone, and this rule answers them with a specific"
+        " recipe instead of a generic one. A service whose startup wiring genuinely"
+        " lives in `app.state` and is not being migrated should stage it at `warn`"
+        " rather than suppress every line."
+    ),
+    fp_caveats=(
+        "The base must resolve lexically, in the same module, to a `FastAPI(...)`"
+        " construction or to a parameter annotated `FastAPI` (or reach the"
+        " application through a `Request`-annotated parameter's `.app`). An"
+        " application imported from another module, an attribute chain, or an"
+        " unannotated fixture parameter is left alone -- nothing there proves it is"
+        " an application. `request.state.attr` is deliberately never flagged:"
+        " per-request state is a different object with a different lifetime."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -135,4 +175,5 @@ RULE = Rule(
         on(ast.Attribute, _check_attribute),
         on(ast.Call, _check_call),
     ),
+    metadata=_METADATA,
 )

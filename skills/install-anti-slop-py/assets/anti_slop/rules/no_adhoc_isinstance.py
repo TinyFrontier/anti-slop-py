@@ -1,26 +1,19 @@
 """``no-adhoc-isinstance`` -- reject ``isinstance``/``issubclass`` branching outside a
 type-guard function (port of ``no-runtime-typeof``).
 
-TypeScript's ``typeof``-narrowing is ad hoc: it re-derives a claim about a value's
-shape at the exact point it is used, instead of deciding it once at a boundary.
-Python's closest counterpart is ``isinstance``/``issubclass`` branching -- except that
-in Python, ``isinstance`` is the *blessed* narrowing mechanism: ``TypeGuard`` and
-``TypeIs`` are themselves defined in terms of a function whose body calls
-``isinstance``. Banning ``isinstance`` everywhere would ban the language's own type
-system. This rule therefore only flags ``isinstance``/``issubclass`` calls that sit
-*outside* a function whose contract actually names the narrowing it performs.
+Only ``isinstance``/``issubclass`` calls that sit *outside* a function whose contract
+names the narrowing it performs are flagged. In Python ``isinstance`` is the blessed
+narrowing mechanism -- ``TypeGuard`` and ``TypeIs`` are themselves defined in terms of
+a function whose body calls it -- so a rule that banned it everywhere would ban the
+language's own type system.
 
 **Default is a reversal of the original.** ``allow-in-type-guards`` (default
 ``True``) exempts calls inside a function whose return annotation is
 ``TypeGuard[...]``/``TypeIs[...]`` -- the bare name, the ``typing.TypeGuard`` /
 ``typing_extensions.TypeIs`` attribute form, and the quoted-string spelling of
-either. Outside such a function, the recipe is unchanged from the original: decode
-the input into a domain type at the I/O boundary (a pydantic/msgspec model or a
-dataclass) and branch on that domain value; for narrowing that is genuinely reusable,
-extract it into its own function annotated ``-> TypeIs[...]`` so the guard is a named,
-checkable contract instead of an inline assumption. Setting the option to ``False``
-switches to a strict mode for pydantic/msgspec-first codebases: every
-``isinstance``/``issubclass`` call is flagged, guard function or not.
+either. Setting the option to ``False`` switches to a strict mode for
+pydantic/msgspec-first codebases: every ``isinstance``/``issubclass`` call is
+flagged, guard function or not.
 
 **"Inside a type-guard function" is resolved structurally, not lexically nearest in
 scope.** Climb ``context.ancestors(node)`` to the *nearest* ``def``/``async def``
@@ -32,21 +25,11 @@ own signature says nothing about narrowing.
 
 Callee detection matches only the bare builtin names ``isinstance``/``issubclass`` --
 not an attribute access such as ``some_module.isinstance`` -- consistent with this
-rule looking for the actual builtins, not anything merely named alike. Without scope
-resolution (``scopes.py``, phase 2b) a local variable or parameter that shadows
-``isinstance``/``issubclass`` is indistinguishable from the builtin and is still
-flagged; this is a known, accepted limitation until scope resolution lands.
+rule looking for the actual builtins, not anything merely named alike.
 
-Known limitations, left for suppressions or later phases:
-
-* ``match``/``case`` class patterns (``case Point(x=x, y=y):``) are structural
-  pattern matching -- legitimate branching on shape -- and are not walked by this
-  rule at all, so they never need a guard function to stay unflagged.
-* ``functools.singledispatch`` implementations and ``__eq__``/``__ne__`` bodies that
-  return ``NotImplemented`` for an unrecognized type both legitimately branch with
-  ``isinstance`` outside anything shaped like a ``TypeGuard`` function; these may need
-  a line-level ``# anti-slop: ignore[no-adhoc-isinstance]`` suppression until a more
-  targeted exemption is designed.
+``match``/``case`` class patterns (``case Point(x=x, y=y):``) are structural pattern
+matching and are not walked by this rule at all, so they never need a guard function
+to stay unflagged.
 """
 
 from __future__ import annotations
@@ -54,7 +37,15 @@ from __future__ import annotations
 import ast
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import BoolOption, Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_POLICY,
+    FIX_NONE,
+    TIER_ARCHITECTURAL,
+    BoolOption,
+    Rule,
+    RuleMetadata,
+    on,
+)
 
 __all__ = ["RULE", "RULE_ID"]
 
@@ -151,6 +142,51 @@ def _is_type_guard_name(value: ast.expr) -> bool:
             return False
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ARCHITECTURAL,
+    confidence=CONFIDENCE_POLICY,
+    fix=FIX_NONE,
+    tags=("typing", "narrowing"),
+    problem=(
+        "An inline `isinstance` branch re-derives a claim about a value's shape at"
+        " the point of use instead of deciding it once at a boundary. Every caller"
+        " that happens to pass the checked type type-checks the same as one that does"
+        " not, nothing downstream is proven, and the same check tends to reappear at"
+        " every site that touches the value. This is the port of the original's"
+        " `no-runtime-typeof`, and it is a policy about where narrowing belongs, not"
+        " a claim that `isinstance` is wrong."
+    ),
+    recipe=(
+        "Decode the input into a domain type at the I/O boundary -- a"
+        " pydantic/msgspec model or a dataclass -- and branch on that domain value,"
+        " so the narrowing happens once where the data arrives. Where the narrowing"
+        " is genuinely reusable, extract it into its own function annotated"
+        " `-> TypeIs[...]`: the guard then becomes a named, checkable contract that"
+        " the type checker understands at every call site."
+    ),
+    when_to_disable=(
+        "This is the bluntest rule in the set, and its default is intentionally"
+        " stricter than idiomatic Python: a plain `if isinstance(value, Foo)` outside"
+        " a guard function is flagged even with `allow-in-type-guards = true`."
+        " Suggested postures: `error` or `warn` in a business backend, `off` or"
+        " `warn` in a framework or library, `warn` in ML/scientific code. Turn it off"
+        " outright where the domain objects are themselves classes to branch on -- an"
+        " AST analyzer, a visitor over a node hierarchy -- because branching on them"
+        " is exactly what this rule's own recipe prescribes; anti-slop's own"
+        " repository does this. `allow-in-type-guards = false` is the opposite move,"
+        " for pydantic/msgspec-first codebases that want every call flagged."
+    ),
+    fp_caveats=(
+        "The builtins are matched by bare name with no scope resolution, so a local"
+        " variable or parameter shadowing `isinstance`/`issubclass` is still flagged."
+        " `Inside a type-guard function` is resolved structurally: the *nearest*"
+        " enclosing `def` decides, so a helper nested inside a guard is judged on its"
+        " own signature. Legitimate patterns that live outside any guard --"
+        " `functools.singledispatch` implementations, `__eq__` bodies returning"
+        " `NotImplemented` for an unrecognized type -- need a per-line suppression."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -159,5 +195,6 @@ RULE = Rule(
     ),
     messages={"adhoc_check": _MESSAGE},
     handlers=(on(ast.Call, _check_call),),
+    metadata=_METADATA,
     options=(_ALLOW_IN_TYPE_GUARDS,),
 )

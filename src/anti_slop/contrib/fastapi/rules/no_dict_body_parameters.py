@@ -1,14 +1,7 @@
 """``fastapi/no-dict-body-parameters`` -- reject a route body typed as a mapping.
 
-FastAPI's whole value proposition is that the request body is decoded and *validated*
-before the handler runs: the annotation on the parameter is the schema, the 422
-response, and the OpenAPI contract, all at once. Annotating that parameter ``dict``,
-``Mapping[str, Any]`` or ``Any`` opts out of every one of those without saying so --
-the payload arrives unchecked, the handler re-derives the fields by hand
-(``payload["email"]``), a missing key becomes a 500 instead of a 422, and the
-generated schema documents the endpoint as accepting anything at all. This is the
-framework-specific form of ``no-any-parameters``/``no-unsafe-dict-values``, reported
-here with the recipe that actually applies: a pydantic model.
+The framework-specific form of ``no-any-parameters``/``no-unsafe-dict-values``,
+reported with the recipe that actually applies: a pydantic model.
 
 Flagged: a parameter of a route handler (see ``_routes.py`` for what counts as one)
 whose annotation is ``Any`` or a dict-like container -- ``dict``, ``Dict``,
@@ -28,9 +21,7 @@ Not flagged:
 * A parameter with no annotation at all -- FastAPI treats it as a query parameter,
   and ``no-any-parameters`` already speaks about missing contracts in general.
 
-Known limitations: a quoted annotation is read as text, not re-parsed, so only its
-head name is matched; and a type alias that expands to ``dict[str, Any]`` in another
-module is invisible here, as everywhere else in this linter.
+A quoted annotation is read as text, not re-parsed, so only its head name is matched.
 """
 
 from __future__ import annotations
@@ -44,7 +35,14 @@ from anti_slop.contrib.fastapi._routes import (
     is_route_handler,
 )
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_POLICY,
+    FIX_NONE,
+    TIER_FRAMEWORK,
+    Rule,
+    RuleMetadata,
+    on,
+)
 from anti_slop.engine.scopes import scope_table_for
 from anti_slop.rules._annotations import DICT_CONTAINER_NAMES, is_any_annotation
 
@@ -110,6 +108,48 @@ def _is_unvalidated_body(annotation: ast.expr) -> bool:
     return annotation_base_name(declared) in DICT_CONTAINER_NAMES
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_FRAMEWORK,
+    confidence=CONFIDENCE_POLICY,
+    fix=FIX_NONE,
+    tags=("fastapi", "typing"),
+    problem=(
+        "FastAPI's whole value proposition is that the request body is decoded and"
+        " *validated* before the handler runs: the annotation on the parameter is the"
+        " schema, the 422 response, and the OpenAPI contract, all at once."
+        " Annotating that parameter `dict`, `Mapping[str, Any]` or `Any` opts out of"
+        " every one of those without saying so -- the payload arrives unchecked, the"
+        " handler re-derives the fields by hand, a missing key becomes a 500 instead"
+        " of a 422, and the generated schema tells clients the endpoint accepts"
+        " anything at all."
+    ),
+    recipe=(
+        "Declare a pydantic `BaseModel` with the fields this handler actually reads"
+        " and annotate the parameter with it: validation, the error response and the"
+        " schema all follow from that one declaration. If the parameter is not the"
+        " body, say so in the signature instead -- `Depends(...)`, `Query(...)`,"
+        " `Header(...)`, `Path(...)` or `Cookie(...)` -- and the rule leaves it"
+        " alone."
+    ),
+    when_to_disable=(
+        "The `fastapi` group is opt-in and off unless `groups = [\"fastapi\"]` names"
+        " it, so no preset ever turns this rule on. Within a project that enables the"
+        " group, the case for staging it at `warn` is a service with many"
+        " pass-through or proxy endpoints, where the body really is opaque and is"
+        " forwarded untouched -- those handlers are worth a suppression each, since"
+        " the exemption is genuinely per-endpoint."
+    ),
+    fp_caveats=(
+        "A function counts as a route handler only when its decorator base resolves,"
+        " within the same module, to a `FastAPI(...)`/`APIRouter(...)` construction:"
+        " a router imported from elsewhere, an attribute chain like"
+        " `@routers.v1.get(...)`, or `@app.api_route(...)` is not recognized, so the"
+        " rule stays silent there. A quoted annotation is matched by its head name"
+        " only, and a type alias expanding to `dict[str, Any]` in another module is"
+        " invisible, as everywhere in this linter."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -120,4 +160,5 @@ RULE = Rule(
         on(ast.FunctionDef, _check_function),
         on(ast.AsyncFunctionDef, _check_function),
     ),
+    metadata=_METADATA,
 )

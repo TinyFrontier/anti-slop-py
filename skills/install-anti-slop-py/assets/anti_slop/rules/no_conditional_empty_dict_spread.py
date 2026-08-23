@@ -1,11 +1,8 @@
 """``no-conditional-empty-dict-spread`` -- reject a ternary spread with an empty branch.
 
-Port of ``no-conditional-empty-object-spread``. The
-pattern ``{**({"timeout": t} if t is not None else {})}`` fabricates an optional
-field: the field's presence or absence is decided by an expression buried inside a
-spread, invisible to anyone reading the dict's shape, and invisible to the type
-checker (the annotation of the merged dict cannot express "this key exists only
-sometimes"). The same shape shows up as a keyword spread in a ``dict(...)`` call:
+Port of ``no-conditional-empty-object-spread``. The pattern appears both as a
+dict-literal spread, ``{**({"timeout": t} if t is not None else {})}``, and as a
+keyword spread in a ``dict(...)`` call,
 ``dict(**({"timeout": t} if t is not None else {}))``.
 
 Detection, in AST terms:
@@ -31,7 +28,14 @@ from __future__ import annotations
 import ast
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_HIGH,
+    FIX_NONE,
+    TIER_ESCAPE_HATCH,
+    Rule,
+    RuleMetadata,
+    on,
+)
 
 __all__ = ["RULE", "RULE_ID"]
 
@@ -85,6 +89,42 @@ def _is_dict_callee(func: ast.expr) -> bool:
             return False
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ESCAPE_HATCH,
+    confidence=CONFIDENCE_HIGH,
+    fix=FIX_NONE,
+    tags=("dict", "typing"),
+    problem=(
+        "A conditional spread fabricates an optional field. Whether the key ends up"
+        " present or absent is decided by an expression buried inside a `**`, so it"
+        " is invisible in the dict's shape as written and unexpressible in its type:"
+        " no annotation can say `this key exists only sometimes`. Every consumer then"
+        " has to guard against a key that the code appears to set unconditionally."
+    ),
+    recipe=(
+        "Build the dict with explicit statements per branch -- start from a base dict"
+        " and add the key under an `if` -- so the condition is visible at the same"
+        " level as the field it controls. Where the field genuinely is optional in"
+        " the contract, say so in the type: `NotRequired[...]` on a `TypedDict`, or"
+        " a model field with a default."
+    ),
+    when_to_disable=(
+        "A codebase that assembles keyword arguments this way pervasively -- building"
+        " client payloads where every field is optional -- may find the rule noisier"
+        " than the pattern is harmful, and can stage it at `warn` while the call"
+        " sites are rewritten. It stays worth turning back on: the shape of a"
+        " request payload is exactly the place a missing key is expensive."
+    ),
+    fp_caveats=(
+        "Only the two literal shapes are matched: a `**` entry of a dict literal, and"
+        " a `**` keyword of a call to the builtin `dict`. A spread into any other"
+        " callable (`configure(**({...} if c else {}))`) is not flagged, because"
+        " knowing what that callable does with it needs call-target resolution. An"
+        " unconditional `**{}` is likewise out of scope, and `empty` means a dict"
+        " literal with no keys -- not a dict of falsy values."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -96,4 +136,5 @@ RULE = Rule(
         on(ast.Dict, _check_dict),
         on(ast.Call, _check_call),
     ),
+    metadata=_METADATA,
 )

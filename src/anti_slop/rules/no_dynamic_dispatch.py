@@ -1,39 +1,25 @@
 """``no-dynamic-dispatch`` -- reject dispatch by namespace lookup or by a runtime
 attribute/method name (port of ``no-reflect-apply``).
 
-TypeScript's ``Reflect.apply`` invokes a function chosen by a string at runtime, with
-nothing enumerating what could actually run. Python offers two equivalent escape
-hatches, both flagged here:
+Two shapes are flagged, the Python equivalents of TypeScript's ``Reflect.apply``:
 
 * **Namespace subscription** -- ``globals()[name]``, ``locals()[name]`` and
   ``vars(obj)[name]``, whether or not the result is then called
-  (``globals()[name]()``). Each of ``globals``/``locals``/``vars`` returns a plain
-  ``dict``, and subscripting it by a runtime name turns an entire namespace into an
-  implicit, unenumerable dispatch table. The subscript itself is what is flagged, so
-  a subsequent call on the result does not double-report: ``globals()[name]`` and
+  (``globals()[name]()``). The subscript itself is what is flagged, so a subsequent
+  call on the result does not double-report: ``globals()[name]`` and
   ``globals()[name]()`` both produce exactly one diagnostic, anchored at the
   subscript.
-* **``operator.attrgetter``/``operator.methodcaller``** -- both build a callable that
-  looks an attribute or method up by a name given at the call site, the same
-  dispatch-by-name shape as the namespace-subscript case, just spelled as a factory
-  instead of ``[]``. Matched as a bare name (``attrgetter(...)``) or any attribute
-  access ending in ``.attrgetter``/``.methodcaller`` (``operator.attrgetter(...)``).
+* **``operator.attrgetter``/``operator.methodcaller``** -- matched as a bare name
+  (``attrgetter(...)``) or any attribute access ending in
+  ``.attrgetter``/``.methodcaller`` (``operator.attrgetter(...)``).
   ``operator.itemgetter`` is deliberately **not** flagged: it dispatches by sequence
   index or mapping key, not by attribute/method name, and is the ordinary idiomatic
   way to build a sort key or projection -- flagging it would ban a pattern with no
   dispatch-by-name character at all.
 
-Both shapes share the same fix: replace the implicit lookup with an explicit
-``Mapping[Literal[...], Callable[...]]`` naming every valid key, or with explicit
-branching on the domain value -- the same recipe the rest of anti-slop gives for
-every other reflective escape hatch.
-
 Callee detection for the namespace case matches only the bare builtin names
 ``globals``/``locals``/``vars`` -- not an attribute access such as
-``some_module.globals()``. Without scope resolution (``scopes.py``, phase 2b) a local
-variable or parameter that shadows one of these names is indistinguishable from the
-builtin and is still flagged; this is a known, accepted limitation until scope
-resolution lands.
+``some_module.globals()``.
 """
 
 from __future__ import annotations
@@ -41,7 +27,14 @@ from __future__ import annotations
 import ast
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_HIGH,
+    FIX_NONE,
+    TIER_ESCAPE_HATCH,
+    Rule,
+    RuleMetadata,
+    on,
+)
 
 __all__ = ["RULE", "RULE_ID"]
 
@@ -121,6 +114,46 @@ def _dispatch_factory_name(func: ast.expr) -> str | None:
             return None
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ESCAPE_HATCH,
+    confidence=CONFIDENCE_HIGH,
+    fix=FIX_NONE,
+    tags=("reflection",),
+    problem=(
+        "Dispatching by a name computed at runtime turns an entire namespace into an"
+        " implicit dispatch table that nothing enumerates. `globals()`, `locals()`"
+        " and `vars(obj)` each return a plain dict, so subscripting one by a string"
+        " means any string reaches the lookup; `attrgetter`/`methodcaller` do the"
+        " same through a factory instead of `[]`. Neither the reader nor the type"
+        " checker can say what could actually run, and a rename anywhere in the"
+        " module silently changes the set of reachable targets."
+    ),
+    recipe=(
+        "Write the dispatch table out: a `Mapping[Literal[...], Callable[...]]` that"
+        " names every valid key, so the set of targets is enumerable, checkable and"
+        " greppable. Where there are only a handful of cases, branch explicitly on"
+        " the domain value instead of on the name that happens to be bound in this"
+        " namespace -- and parse the input that produced the name into that domain"
+        " value at the I/O boundary."
+    ),
+    when_to_disable=(
+        "A module whose job really is reflective -- a plugin loader that discovers"
+        " entry points, a REPL, a serialization framework walking arbitrary objects"
+        " -- takes a per-line suppression at the two or three places that do the"
+        " lookup. Turning the rule off wholesale is worth it only in a codebase built"
+        " around dynamic dispatch as its architecture, where every finding would be"
+        " the design working as intended."
+    ),
+    fp_caveats=(
+        "The namespace builtins are matched by bare name, with no scope resolution"
+        " behind them, so a local variable or parameter that shadows `globals`,"
+        " `locals` or `vars` is indistinguishable from the builtin and is still"
+        " flagged. `attrgetter`/`methodcaller` are matched by trailing attribute"
+        " name, so an unrelated object with a method of that name is flagged too."
+        " `itemgetter` is excluded by design and never reported."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -135,4 +168,5 @@ RULE = Rule(
         on(ast.Subscript, _check_subscript),
         on(ast.Call, _check_call),
     ),
+    metadata=_METADATA,
 )

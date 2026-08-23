@@ -9,6 +9,7 @@ from anti_slop.engine.comments import build_comment_map
 from anti_slop.engine.context import RuleContext
 from anti_slop.engine.rule import Diagnostic, Rule, on
 from anti_slop.engine.walker import ParentMap, Walker
+from harness import PROBE_METADATA
 
 SOURCE = """class Repository:
     def save(self, value):
@@ -31,6 +32,7 @@ STATEMENT_PROBE = Rule(
     description="probe rule subscribing to the ast.stmt base class",
     messages={"seen": "{kind}"},
     handlers=(on(ast.stmt, _report_statement),),
+    metadata=PROBE_METADATA,
 )
 
 NAME_PROBE = Rule(
@@ -38,6 +40,7 @@ NAME_PROBE = Rule(
     description="probe rule subscribing to a single leaf node type",
     messages={"seen": "{kind}"},
     handlers=(on(ast.Name, _report_name),),
+    metadata=PROBE_METADATA,
 )
 
 

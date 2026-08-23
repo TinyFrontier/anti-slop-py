@@ -7,11 +7,9 @@ three-step local flow inside one scope::
     raw: Any = u              # 2. an explicit widening of that binding
     user = cast(User, raw)    # 3. the narrow type claimed back by force
 
-Every step is legal, and together they are a round trip that ends exactly where it
-started -- except that the type checker's own evidence was thrown away at step 2 and
-replaced at step 3 by an assertion nobody verified. Step 3 is what gets reported,
-because that is the line that fabricates the evidence; the message names the whole
-chain so the fix (delete step 2) is visible from the diagnostic alone.
+Step 3 is what gets reported, because that is the line that fabricates the evidence;
+the message names the whole chain so the fix (delete step 2) is visible from the
+diagnostic alone.
 
 A direct ``cast(User, u)`` with no widening in between is *not* this rule -- it is a
 plain unverified assertion, which ``require-safety-comment`` handles.
@@ -77,7 +75,14 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_HIGH,
+    FIX_NONE,
+    TIER_ESCAPE_HATCH,
+    Rule,
+    RuleMetadata,
+    on,
+)
 from anti_slop.rules._annotations import (
     is_any_annotation,
     is_object_annotation,
@@ -351,6 +356,45 @@ def _argument(call: ast.Call, *, index: int, keyword: str) -> ast.expr | None:
     return None
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ESCAPE_HATCH,
+    confidence=CONFIDENCE_HIGH,
+    fix=FIX_NONE,
+    tags=("casts", "typing"),
+    problem=(
+        "A binding with a proven type is widened to `Any`/`object` and then cast back"
+        " to a narrow type a few lines later. Every step is legal, and together they"
+        " are a round trip that ends where it started -- except that the checker's"
+        " own evidence was thrown away at the widening and replaced, at the cast, by"
+        " an assertion nobody verified. It is the clearest signature of a type error"
+        " that was silenced rather than fixed: the proof was in the code already, and"
+        " the code went out of its way to lose it."
+    ),
+    recipe=(
+        "Delete the widening step and use the original binding directly, with the"
+        " type it already carries. If something in between genuinely requires"
+        " `Any`/`object`, give that function a narrow parameter type instead of"
+        " widening the value at its call site -- the widening is nearly always there"
+        " to satisfy a signature that should have been narrowed."
+    ),
+    when_to_disable=(
+        "There is no idiom this rule bans. It is also the most conservative rule in"
+        " the set: it reports only a straight-line, single-scope round trip it can"
+        " see end to end, so a finding is almost always exactly what it says."
+    ),
+    fp_caveats=(
+        "Analysis is straight-line and per scope: statement lists of the module body"
+        " and of each function body, never descending into `if`/`for`/`while`/`with`/"
+        "`try`/`match` bodies and never crossing a function boundary. Any statement"
+        " that stores into a tracked name -- including one nested inside a branch --"
+        " drops that name, so the shape stays silent whenever the chain might have"
+        " been broken. Step 1 recognizes a constructor call by the capitalized-callee"
+        " heuristic, since a syntax-only rule cannot know what is a class; getting"
+        " that wrong only changes whether a round trip is seen, never whether an"
+        " unrelated cast is reported. `cast` is matched syntactically, as elsewhere."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -363,4 +407,5 @@ RULE = Rule(
         on(ast.FunctionDef, _check_function),
         on(ast.AsyncFunctionDef, _check_function),
     ),
+    metadata=_METADATA,
 )

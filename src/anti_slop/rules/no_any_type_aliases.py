@@ -1,13 +1,7 @@
 """``no-any-type-aliases`` -- reject type aliases that resolve to ``Any``.
 
-An alias is a promise: the name says a domain type is coming. ``Metadata = Any``
-breaks that promise silently -- every signature that says ``Metadata`` reads as if it
-were typed, while the checker has been switched off behind the name. The original
-anti-slop rule (``no-unknown-type-aliases``) puts it as *unknown must remain visible
-at an allowed boundary*: if a value genuinely is not known yet, the boundary that
-receives it must say so out loud.
-
-All three Python spellings of an alias are covered:
+Port of the original anti-slop's ``no-unknown-type-aliases``. All three Python
+spellings of an alias are covered:
 
 - ``X = Any`` -- a plain module-level assignment of a type;
 - ``X: TypeAlias = Any`` -- the PEP 613 marker, anywhere;
@@ -37,7 +31,14 @@ import ast
 from collections.abc import Sequence
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_HIGH,
+    FIX_NONE,
+    TIER_ESCAPE_HATCH,
+    Rule,
+    RuleMetadata,
+    on,
+)
 from anti_slop.engine.scopes import ImportBinding, ScopeTable, scope_table_for
 from anti_slop.rules._annotations import (
     ANY_QUALIFIED_NAMES,
@@ -169,6 +170,44 @@ def _name_of(target: ast.expr) -> str | None:
             return None
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ESCAPE_HATCH,
+    confidence=CONFIDENCE_HIGH,
+    fix=FIX_NONE,
+    tags=("typing",),
+    problem=(
+        "An alias is a promise that a domain type is coming. `Metadata = Any` breaks"
+        " that promise silently: every signature that names `Metadata` reads as if it"
+        " were typed, while the checker has been switched off behind the name. The"
+        " escape hatch becomes invisible at exactly the call sites that would"
+        " otherwise have to justify it, and a chain of aliases can carry it several"
+        " modules away from where anyone would think to look."
+    ),
+    recipe=(
+        "Name the type the alias was standing in for -- a dataclass, TypedDict,"
+        " Protocol, or a narrow union -- and parse external input into it at the I/O"
+        " boundary. If the value really is unknown where it arrives, keep `Any`"
+        " visible in that boundary signature instead of hiding it behind an alias:"
+        " unknown data is allowed, an unknown that reads like a domain type is not."
+    ),
+    when_to_disable=(
+        "Rarely. The rule bans a name that misrepresents itself, which is a defect on"
+        " any team's terms. A codebase mid-migration, where one alias is the agreed"
+        " staging post for data not yet modelled, suppresses that alias by rule id"
+        " and leaves the rule on for every other one."
+    ),
+    fp_caveats=(
+        "Alias resolution is lexical and module-local: a right-hand side imported"
+        " from another module is not followed, and a plain `X = Any` counts as an"
+        " alias only at module level (inside a function or class body it reads as a"
+        " value binding). Chains are cycle-guarded, so mutually recursive aliases"
+        " report nothing rather than looping. A union counts only when every non-"
+        "`None` member resolves to `Any` (`Any | None`, `Optional[Any]`); a union"
+        " that mixes `Any` with a real type is left to the parameter and return"
+        " rules, which see the `Any` member directly."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description="Type aliases must name a domain type, not hide `Any` behind a name.",
@@ -178,4 +217,5 @@ RULE = Rule(
         on(ast.AnnAssign, _check_ann_assign),
         on(ast.TypeAlias, _check_type_alias),
     ),
+    metadata=_METADATA,
 )

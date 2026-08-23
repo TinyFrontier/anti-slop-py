@@ -1,12 +1,8 @@
 """``no-module-mocking`` -- reject patching another module's attributes in tests.
 
-Module mocking makes the import graph the seam. The test then proves that the patched
-name still exists at that path and is still spelled that way -- not that the code
-under test works -- and the day someone renames, re-exports or inlines the target, the
-patch quietly stops patching anything while the test keeps passing. The original
-anti-slop bans ``vi.mock``/``jest.mock`` for exactly this; the Python equivalents are
-``unittest.mock.patch``, the ``mocker`` fixture of pytest-mock, and pytest's
-``monkeypatch.setattr``.
+Port of the original anti-slop's ``vi.mock``/``jest.mock`` ban; the Python
+equivalents are ``unittest.mock.patch``, the ``mocker`` fixture of pytest-mock, and
+pytest's ``monkeypatch.setattr``.
 
 Recognized, in every form the same call takes -- decorator, context manager, and plain
 call, which are all ``ast.Call`` nodes:
@@ -28,11 +24,6 @@ and ``patch("...")`` there reports nothing. By the same token ``patch.dict(...)`
 ``monkeypatch.setenv`` / ``delenv`` / ``chdir`` / ``syspath_prepend`` are left alone --
 they configure process state (environment, cwd, sys.path) rather than replacing a
 collaborator, and there is no dependency to inject in their place.
-
-Known limitations: a ``patch`` re-exported through ``conftest.py`` or any other module
-is not followed, since nothing in this linter does cross-module inference; and the two
-pytest fixtures are recognized by their conventional parameter names, so a test that
-renames them in its signature is not seen.
 """
 
 from __future__ import annotations
@@ -40,7 +31,14 @@ from __future__ import annotations
 import ast
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_POLICY,
+    FIX_NONE,
+    TIER_ARCHITECTURAL,
+    Rule,
+    RuleMetadata,
+    on,
+)
 from anti_slop.engine.scopes import (
     ParameterBinding,
     ScopeTable,
@@ -124,9 +122,51 @@ def _is_fixture_patch(
             return False
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ARCHITECTURAL,
+    confidence=CONFIDENCE_POLICY,
+    fix=FIX_NONE,
+    tags=("testing",),
+    problem=(
+        "Patching a name in another module makes the import graph the seam. The test"
+        " then proves that the patched name still exists at that path and is still"
+        " spelled that way -- not that the code under test works. After a rename, a"
+        " re-export or an inlining, the patch silently replaces nothing while the"
+        " test keeps passing, which is the worst failure mode a test can have. Field"
+        " runs show this is also the pattern agents produce most: mock everything,"
+        " then assert on the mock."
+    ),
+    recipe=(
+        "Take the collaborator as an argument -- a parameter typed by a Protocol, an"
+        " ABC, or a narrow callable type -- and pass a real test implementation from"
+        " the test: an in-memory fake, a stub adapter, or the production object wired"
+        " to a test double at the process edge. If the dependency is buried too deep"
+        " to pass in today, lift it to the constructor or the call signature first;"
+        " that refactoring is what the mock was standing in for. In FastAPI projects,"
+        " `app.dependency_overrides` is the native seam to migrate onto."
+    ),
+    when_to_disable=(
+        "Suggested postures: `error` for new code with suppressions on legacy tests"
+        " in a business backend, `warn` or `off` in a framework or library, `warn` in"
+        " ML/scientific code. On both repositories used for field validation, 100% of"
+        " the hits were in test suites already built around"
+        " `mock.patch`/`monkeypatch.setattr` -- hundreds at once. Turn it on with a"
+        " migration plan to dependency injection, not as a same-day blocker."
+    ),
+    fp_caveats=(
+        "A `patch` re-exported through `conftest.py` or any other module is not"
+        " followed, since this linter does no cross-module inference. The two pytest"
+        " fixtures are recognized by their conventional parameter names, so a test"
+        " that renames them in its signature is not seen. Both directions are"
+        " deliberate: resolution is lexical and local, which keeps the rule quiet"
+        " rather than speculative."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description="Inject dependencies through real seams instead of patching modules.",
     messages={"module-mock": MESSAGE},
     handlers=(on(ast.Call, _check_call),),
+    metadata=_METADATA,
 )

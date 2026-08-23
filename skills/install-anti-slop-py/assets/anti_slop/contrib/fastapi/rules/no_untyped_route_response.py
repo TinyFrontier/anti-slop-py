@@ -1,12 +1,5 @@
 """``fastapi/no-untyped-route-response`` -- reject a route whose response has no type.
 
-A route handler's return annotation is the response contract: FastAPI validates and
-serializes the returned object against it and publishes it as the endpoint's OpenAPI
-response schema. A handler that returns ``dict`` -- or nothing declared at all --
-therefore ships an endpoint whose response shape exists only inside the function
-body. Clients get no schema, the generated client has no model, and a field renamed
-in the handler silently changes the wire contract with nothing to catch it.
-
 Flagged, on a route handler (see ``_routes.py``):
 
 * no return annotation at all;
@@ -25,13 +18,8 @@ Not flagged:
   annotation that names an actual type. Returning a ``Response`` object is a
   deliberate step *below* the serialization layer -- streaming, a custom status or
   media type, a file -- where the framework is asked not to model the body at all.
-  Known limitation: this rule cannot tell such a response apart from a plain domain
-  type, and does not try to; it judges only whether the contract was left open.
 
-Known limitation: a container *of* an untyped element (``-> list[dict]``,
-``-> dict[str, Any] | None``) is not flagged. The rule reads the return annotation
-itself, not the types nested inside it; the core ``no-unsafe-dict-values`` rule is
-what speaks about a dict-like container whose value type is ``Any``.
+The rule reads the return annotation itself, not the types nested inside it.
 """
 
 from __future__ import annotations
@@ -44,7 +32,14 @@ from anti_slop.contrib.fastapi._routes import (
     route_decorators,
 )
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_POLICY,
+    FIX_NONE,
+    TIER_FRAMEWORK,
+    Rule,
+    RuleMetadata,
+    on,
+)
 from anti_slop.engine.scopes import scope_table_for
 from anti_slop.rules._annotations import DICT_CONTAINER_NAMES, is_any_annotation
 
@@ -118,6 +113,48 @@ def _is_untyped_response(annotation: ast.expr) -> bool:
     return annotation_base_name(declared) in DICT_CONTAINER_NAMES
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_FRAMEWORK,
+    confidence=CONFIDENCE_POLICY,
+    fix=FIX_NONE,
+    tags=("fastapi", "typing"),
+    problem=(
+        "A route handler's return annotation is the response contract: FastAPI"
+        " validates and serializes the returned object against it and publishes it as"
+        " the endpoint's OpenAPI response schema. A handler that returns `dict` -- or"
+        " declares nothing at all -- ships an endpoint whose response shape exists"
+        " only inside the function body. Clients get no schema, the generated client"
+        " has no model, and a field renamed inside the handler silently changes the"
+        " wire contract with nothing to catch it."
+    ),
+    recipe=(
+        "Annotate the return with a pydantic `BaseModel` naming the fields this"
+        " endpoint actually sends: FastAPI then validates the response against it,"
+        " filters anything not declared, and publishes it as the endpoint's schema."
+        " Use `-> None` for a route that only has an effect, and pass"
+        " `response_model=...` on the decorator only when the wire shape must differ"
+        " from the returned type."
+    ),
+    when_to_disable=(
+        "The `fastapi` group is opt-in and off unless `groups = [\"fastapi\"]` names"
+        " it, so no preset ever turns this rule on. Inside a project that enables the"
+        " group this is the least contested of the four -- the annotation is the"
+        " endpoint's public contract. An existing service adopting the group stages"
+        " it at `warn` until its handlers have models, since every handler is a"
+        " separate small change."
+    ),
+    fp_caveats=(
+        "Route handlers are recognized lexically, within one module: a router"
+        " imported from elsewhere, an attribute chain (`@routers.v1.get(...)`) or"
+        " `@app.api_route(...)` is not seen as a route at all. A"
+        " `response_model=<NamedType>` keyword on the decorator counts as the"
+        " contract and wins over the return annotation. A `Response` subclass cannot"
+        " be told apart from a domain type and is accepted as one -- the rule judges"
+        " only whether the contract was left open. A container *of* an untyped"
+        " element (`-> list[dict]`) is not flagged here."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -128,4 +165,5 @@ RULE = Rule(
         on(ast.FunctionDef, _check_function),
         on(ast.AsyncFunctionDef, _check_function),
     ),
+    metadata=_METADATA,
 )

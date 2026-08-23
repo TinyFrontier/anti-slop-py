@@ -23,12 +23,14 @@ from anti_slop.engine.scopes import (
     scope_table_for,
 )
 from anti_slop.engine.walker import ParentMap, Walker
+from harness import PROBE_METADATA
 
 _PROBE_RULE = Rule(
     id="probe",
     description="Test-only rule used to build a RuleContext.",
     messages={"probe": "probe"},
     handlers=(),
+    metadata=PROBE_METADATA,
 )
 
 

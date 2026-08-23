@@ -1,16 +1,9 @@
 """``require-safety-comment`` -- every cast and every checker suppression states its invariant.
 
-Port of ``require-safety-comment-for-type-assertion``.
-A ``typing.cast`` and a ``# type: ignore`` are the same move written two ways: both
-tell the checker "accept this, I have proof you cannot see". The proof is the whole
-point, and it is exactly what disappears when an agent reaches for either one to make
-a red line go away. This rule demands the proof be written down as
-``# SAFETY: <invariant>`` -- the invariant the checker cannot express, verified by a
-human or by code the checker cannot follow.
-
-There are no exceptions. TypeScript's ``as const`` has no Python counterpart, and
-``cast`` is unsafe by construction: unlike
-``isinstance``, it checks nothing at runtime, it only silences the checker.
+Port of ``require-safety-comment-for-type-assertion``. There are no exemptions:
+TypeScript's ``as const`` has no Python counterpart, and ``cast`` is unsafe by
+construction -- unlike ``isinstance``, it checks nothing at runtime, it only silences
+the checker.
 
 Three independent defects are reported:
 
@@ -28,23 +21,17 @@ Three independent defects are reported:
     directive suppresses exactly the line it sits on.
 
 ``bare_type_ignore`` / ``bare_suppression``
-    a suppression that names no error code. This is a violation *always*, even with a
-    perfect ``# SAFETY:`` comment: a code-less directive silences every error on the
-    line, including errors introduced later by edits that have nothing to do with the
-    invariant that was written down.
-
-The last check is deliberately independent of the ``# SAFETY:`` check, so a bare
-``# type: ignore`` with no safety comment reports twice -- once for the missing
-invariant, once for the missing code. They are separate defects with separate fixes.
+    a suppression that names no error code. This check is deliberately independent of
+    the ``# SAFETY:`` check, so a bare ``# type: ignore`` with no safety comment
+    reports twice -- once for the missing invariant, once for the missing code. They
+    are separate defects with separate fixes.
 
 Not a checker suppression: anti-slop's own ``# anti-slop: ignore[rule-id]``. It names
 a rule of *this* linter, is already required to name it, and is parsed
 by a different directive grammar entirely.
 
 Known limitation, shared with ``no-chained-casts``: callee detection is syntactic --
-a bare name ``cast`` or any attribute access ending in ``.cast``. An unrelated helper
-literally named ``cast`` (SQLAlchemy's, say) is flagged too. Narrowing this to names
-that actually resolve to ``typing.cast`` needs import resolution.
+a bare name ``cast`` or any attribute access ending in ``.cast``.
 """
 
 from __future__ import annotations
@@ -59,7 +46,14 @@ from anti_slop.engine.comments import (
     safety_invariant_at,
 )
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_HIGH,
+    FIX_NONE,
+    TIER_ESCAPE_HATCH,
+    Rule,
+    RuleMetadata,
+    on,
+)
 
 __all__ = ["RULE", "RULE_ID"]
 
@@ -210,6 +204,49 @@ def _target_argument(call: ast.Call) -> ast.expr | None:
     return None
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ESCAPE_HATCH,
+    confidence=CONFIDENCE_HIGH,
+    fix=FIX_NONE,
+    tags=("casts", "suppressions"),
+    problem=(
+        "A `cast` and a `# type: ignore` are the same move written two ways: both"
+        " tell the checker `accept this, I have proof you cannot see`. The proof is"
+        " the whole point, and it is exactly what disappears when the fastest way to"
+        " clear a red line is to silence it. A suppression that names no error code"
+        " goes further: it silences every error on its line, including errors"
+        " introduced later by edits that have nothing to do with whatever was once in"
+        " mind."
+    ),
+    recipe=(
+        "State the invariant you actually verified -- the one the checker cannot"
+        " express -- in a `# SAFETY:` comment on the line or directly above the"
+        " statement: `# SAFETY: the row is selected by primary key, so the column is"
+        " never NULL`. Name an error code on every suppression. Where ty is the"
+        " checker, prefer its own `# ty: ignore[<rule>]` dialect, which really is"
+        " scoped to the named rule. If no invariant can be stated, do not suppress:"
+        " parse the value where it enters the code, so the type is proven rather than"
+        " asserted."
+    ),
+    when_to_disable=(
+        "A repository that adopts a type checker after the fact starts with hundreds"
+        " of inherited suppressions, and turning this rule on at `error` on day one"
+        " blocks every commit for reasons unrelated to the commit. Stage it at `warn`"
+        " -- or scope it to changed code -- while the backlog is annotated. New code"
+        " should be held to it immediately: the invariant is cheapest to write down"
+        " at the moment it is known."
+    ),
+    fp_caveats=(
+        "`cast` is matched syntactically -- a bare name or any attribute access"
+        " ending in `.cast` -- so an unrelated helper named `cast` is flagged too."
+        " A cast is covered by a `# SAFETY:` on its own line or above its owning"
+        " statement; a suppression is covered only on its own line or in the comment"
+        " block immediately above it, because a directive suppresses exactly the line"
+        " it sits on. A bare suppression with no safety comment reports twice, by"
+        " design: two defects, two fixes."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -226,4 +263,5 @@ RULE = Rule(
         on(ast.Call, _check_call),
         on(ast.Module, _check_module),
     ),
+    metadata=_METADATA,
 )

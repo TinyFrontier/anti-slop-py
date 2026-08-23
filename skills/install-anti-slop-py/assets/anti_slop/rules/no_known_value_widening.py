@@ -1,11 +1,8 @@
 """``no-known-value-widening`` -- reject a literal value under an `Any`/`object` annotation.
 
-Port of ``no-known-value-widening``. This is the phase-1
-base case only: it flags an ``ast.AnnAssign`` whose annotation is ``Any`` or
-``object`` and whose value is a syntactic literal (``ast.Dict``, ``ast.List``,
-``ast.Set``, ``ast.Tuple`` or ``ast.Constant``). The value's shape is known right at
-the assignment; annotating it ``Any``/``object`` throws that knowledge away for every
-reader and every downstream check.
+Port of ``no-known-value-widening``. Flags an ``ast.AnnAssign`` whose annotation is
+``Any`` or ``object`` and whose value is a syntactic literal (``ast.Dict``,
+``ast.List``, ``ast.Set``, ``ast.Tuple`` or ``ast.Constant``).
 
 The original TypeScript rule also special-cases object literals under a *narrower*
 mapped/index-signature type, on the theory that TypeScript erases literal keys past
@@ -14,7 +11,7 @@ infer literal dict keys in the first place, so ``handlers: dict[str, Handler] = 
 is already idiomatic and stays unflagged -- there is no narrower-but-still-lossy type
 to compare against, only ``Any``/``object``.
 
-Two deliberate exclusions, both because "syntactic literal" is a purely
+Three deliberate exclusions, all because "syntactic literal" is a purely
 AST-node-type check rather than a "provably constant" check:
 
 * A call that *builds* a literal-looking value, e.g. ``x: Any = dict(a=1)``, is
@@ -33,7 +30,14 @@ from __future__ import annotations
 import ast
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_HIGH,
+    FIX_NONE,
+    TIER_ESCAPE_HATCH,
+    Rule,
+    RuleMetadata,
+    on,
+)
 
 __all__ = ["RULE", "RULE_ID"]
 
@@ -76,9 +80,45 @@ def _widening_annotation_name(annotation: ast.expr) -> str | None:
             return None
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ESCAPE_HATCH,
+    confidence=CONFIDENCE_HIGH,
+    fix=FIX_NONE,
+    tags=("typing",),
+    problem=(
+        "The value is written out on the same line -- a literal dict, list, set,"
+        " tuple or constant -- so its shape is known to everyone who reads the"
+        " assignment. Annotating it `Any` or `object` throws that knowledge away"
+        " deliberately: from the next line on, every reader and every downstream"
+        " check has to treat a value they can see as arbitrary data. This is evidence"
+        " being discarded at the one point where it was free."
+    ),
+    recipe=(
+        "Narrow the annotation to what is actually known. `Final` for a value that"
+        " never changes, a `TypedDict` for a literal dict shape, an `Enum` or"
+        " `Literal` union for a fixed set of constants, or the specific domain type"
+        " the value represents. Dropping the annotation entirely is usually better"
+        " than widening it: inference already knows the literal's type."
+    ),
+    when_to_disable=(
+        "Little reason to: the finding is local, the evidence is on the same line,"
+        " and the fix never spreads beyond it. A module of configuration constants"
+        " deliberately typed loosely for a dynamic consumer is the one place a"
+        " per-line suppression pays, and it is worth writing down why there."
+    ),
+    fp_caveats=(
+        "`Literal` here means literal *syntax*, not `provably constant`, so the rule"
+        " is quiet on values a human would still call known: `x: Any = dict(a=1)` is"
+        " a call, an f-string is a `JoinedStr`, and `x: Any = -1` is a unary"
+        " operation wrapping a constant. None of the three is flagged. `Any` and"
+        " `object` are matched by spelling, without import resolution."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description="A literal value's annotation must not widen it to `Any` or `object`.",
     messages={"known_value_widening": _MESSAGE},
     handlers=(on(ast.AnnAssign, _check_ann_assign),),
+    metadata=_METADATA,
 )

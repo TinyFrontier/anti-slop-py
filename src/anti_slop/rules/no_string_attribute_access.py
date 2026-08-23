@@ -1,30 +1,17 @@
 """``no-string-attribute-access`` -- reject ``getattr``/``setattr``/``delattr`` calls
 (port of ``no-reflect-get``).
 
-TypeScript's ``Reflect.get`` reaches an attribute through a string name instead of
-static property access; Python's equivalent reflective trio is the builtins
-``getattr``, ``setattr`` and ``delattr``. Both cases hide a property access from the
-type checker and, when the name is computed rather than a literal, from the reader as
-well. This rule flags every call to any of the three -- there is no legitimate use of
-the reflective form itself, only a difference in *what to do instead*, which is why
-detection produces one of two distinct messages depending on the name argument:
+Every call to any of the three builtins is flagged; which of the three messages is
+produced depends on the name argument:
 
 * **Literal name** (``getattr(obj, "attr")``, ``setattr(obj, "attr", value)``,
-  ``delattr(obj, "attr")``): the attribute is already known at read time, so the call
-  buys nothing over direct attribute syntax. The recipe is simply to write
-  ``obj.attr`` / ``obj.attr = value`` / ``del obj.attr``. The one exception inside the
-  literal case is ``getattr`` called with a third (default) argument: falling back to
-  a default when an attribute may or may not exist is a *contract* question, not a
-  syntax shortcut, so that variant gets its own recipe -- an explicit check against
-  the contract actually expected (a ``Protocol`` the object should satisfy, or a plain
-  attribute access once the object's type guarantees the attribute exists) instead of
-  papering over the uncertainty with a default value.
+  ``delattr(obj, "attr")``) -- reported with the direct attribute syntax the call is
+  equivalent to.
+* **Literal name with a default** (``getattr(obj, "attr", fallback)`` -- a third
+  positional argument) -- reported separately, because a fallback is a contract
+  question rather than a syntax shortcut.
 * **Dynamic name** (the second argument is any expression other than a string
-  literal, e.g. ``getattr(obj, field_name)``): the attribute touched depends on a
-  runtime value, so nothing here is provably safe. The recipe is to parse the input
-  that produced the name into a domain type at the I/O boundary and branch on that
-  domain value, the same recipe the rest of anti-slop gives for every other
-  reflective escape hatch.
+  literal, e.g. ``getattr(obj, field_name)``).
 
 Callee detection matches only the bare builtin names ``getattr``/``setattr``/
 ``delattr`` -- not an attribute access such as ``reflection.getattr(...)`` -- and the
@@ -32,10 +19,6 @@ name argument is always the second *positional* argument (none of the three buil
 accept keyword arguments in CPython). ``hasattr`` is deliberately never touched by
 this rule: it is a plain existence check, not an attribute *access*, and is left as a
 candidate for the opt-in ``strictness`` contrib group (``no-hasattr-narrowing``).
-
-Without scope resolution (``scopes.py``, phase 2b) a local variable or parameter that
-shadows ``getattr``/``setattr``/``delattr`` is indistinguishable from the builtin and
-is still flagged; this is a known, accepted limitation until scope resolution lands.
 """
 
 from __future__ import annotations
@@ -43,7 +26,14 @@ from __future__ import annotations
 import ast
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_POLICY,
+    FIX_NONE,
+    TIER_ARCHITECTURAL,
+    Rule,
+    RuleMetadata,
+    on,
+)
 
 __all__ = ["RULE", "RULE_ID"]
 
@@ -161,6 +151,48 @@ def _direct_access_expr(
             return f"{obj_source}.{literal}"
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ARCHITECTURAL,
+    confidence=CONFIDENCE_POLICY,
+    fix=FIX_NONE,
+    tags=("reflection",),
+    problem=(
+        "`getattr`/`setattr`/`delattr` reach an attribute through a string, which"
+        " hides the access from the type checker and, when the name is computed,"
+        " from the reader as well. With a literal name the call buys nothing over"
+        " direct attribute syntax and only costs the check. With a computed name"
+        " nothing proves which attribute is touched, so a typo or a renamed field"
+        " surfaces as an `AttributeError` at runtime instead of as a type error."
+        " With a default argument it papers over an open question -- does this object"
+        " carry the attribute or not -- rather than answering it."
+    ),
+    recipe=(
+        "For a literal name, write the direct access: `obj.attr`, `obj.attr = value`,"
+        " `del obj.attr`. For a default, state the contract instead of hiding the"
+        " uncertainty: a `Protocol` the object should satisfy, or a plain attribute"
+        " access once the object's type guarantees the attribute exists. For a"
+        " computed name, parse the input that produced it into a domain type at the"
+        " I/O boundary and branch on that domain value."
+    ),
+    when_to_disable=(
+        "Suggested postures: `error` in a business backend, `off` or `warn` in a"
+        " framework or library where metaprogramming is the product, `warn` in"
+        " ML/scientific code. A serialization layer, an ORM, or a plugin system built"
+        " on attribute reflection will produce findings on every second line, and"
+        " that is the design rather than a defect. In FastAPI projects a large share"
+        " of the hits come from `app.state` access, which the"
+        " `fastapi/no-state-attribute-access` rule answers with a specific recipe --"
+        " enable the group instead of turning this rule off."
+    ),
+    fp_caveats=(
+        "The builtins are matched by bare name, with no scope resolution, so a local"
+        " variable or parameter that shadows one of them is still flagged. Only the"
+        " second positional argument is read as the name, matching CPython's"
+        " signatures. `hasattr` is never flagged, and a malformed call with too few"
+        " arguments is left to the type checker."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -173,4 +205,5 @@ RULE = Rule(
         "dynamic": _MESSAGE_DYNAMIC,
     },
     handlers=(on(ast.Call, _check_call),),
+    metadata=_METADATA,
 )

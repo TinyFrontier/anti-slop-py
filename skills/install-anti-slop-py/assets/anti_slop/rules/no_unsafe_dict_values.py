@@ -10,8 +10,8 @@ variable/field annotations, wherever in that annotation tree the container appea
 (so ``Optional[dict[str, Any]]`` and ``dict[str, dict[str, Any]]`` are both caught,
 each anchored at the specific unsafe subscript).
 
-Since phase 2 the rule also sees through *names*, using the lexical scopes of
-``engine/scopes.py``. A name never made the value type any narrower:
+The rule also sees through *names*, using the lexical scopes of
+``engine/scopes.py``:
 
     Metadata = dict[str, Any]
 
@@ -42,7 +42,14 @@ from __future__ import annotations
 import ast
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_MEDIUM,
+    FIX_NONE,
+    TIER_ESCAPE_HATCH,
+    Rule,
+    RuleMetadata,
+    on,
+)
 from anti_slop.engine.scopes import ScopeTable, scope_table_for
 from anti_slop.rules._annotations import (
     container_value_annotation,
@@ -163,6 +170,46 @@ def _unsafe_container(table: ScopeTable, annotation: ast.expr) -> ast.Subscript 
     return None
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ESCAPE_HATCH,
+    confidence=CONFIDENCE_MEDIUM,
+    fix=FIX_NONE,
+    tags=("typing", "dict"),
+    problem=(
+        "`dict[str, Any]` is the most common way a payload keeps travelling through a"
+        " codebase without ever being modelled. The container is typed, so the"
+        " annotation looks like a contract, but the value type checks against"
+        " anything: nothing about a lookup's result is proven anywhere downstream,"
+        " and every consumer re-derives the actual shape by reading the producer. An"
+        " alias makes it worse by giving the same hole a domain-sounding name."
+    ),
+    recipe=(
+        "Narrow the value type to a TypedDict, dataclass, model, or specific domain"
+        " type -- the shape the code already assumes when it reads keys out of the"
+        " mapping. If the shape genuinely varies per key, parse the raw payload into"
+        " that type at the I/O boundary and store the parsed value, so the mapping"
+        " holds domain objects rather than undifferentiated data. Where the mapping"
+        " is really a record with fixed keys, a dataclass replaces it outright."
+    ),
+    when_to_disable=(
+        "This is the escape-hatch rule most likely to fire in bulk on an existing"
+        " codebase, because untyped payload dicts spread by copying. A repository"
+        " adopting anti-slop after the fact stages it at `warn` (or excludes it from"
+        " the `minimal` preset, which is what that preset does) while the models are"
+        " grown, rather than suppressing hundreds of lines."
+    ),
+    fp_caveats=(
+        "This is the one escape-hatch rule at medium confidence, and the reason is"
+        " resolution. Alias chains are followed lexically within the module: an alias"
+        " rebound inside a function shadows the module-level one, an alias bound"
+        " twice in the same scope resolves to nothing at all (there is no flow"
+        " analysis), and an alias imported from another module is not followed. Union"
+        " members are checked, so `dict[str, X | Any]` counts, which makes a union"
+        " that merely passes through `Any` at one boundary read as unsafe everywhere"
+        " it is named. Container and `Any`/`object` names are matched by spelling."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description="Dict-like value types must name a domain type, not `Any`/`object`.",
@@ -173,4 +220,5 @@ RULE = Rule(
         on(ast.AnnAssign, _check_ann_assign),
         on(ast.TypeAlias, _check_type_alias),
     ),
+    metadata=_METADATA,
 )

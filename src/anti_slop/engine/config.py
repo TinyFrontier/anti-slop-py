@@ -11,6 +11,12 @@ subpackage of :mod:`anti_slop.contrib` whose ``__init__`` exposes ``GROUP_RULES`
 rule its own recipe). Enabling a group appends its rules to the effective registry --
 :attr:`Config.registry` -- at ``error`` by default; leaving ``groups`` out reproduces
 the core-only behaviour exactly.
+
+``preset`` is the one key that changes *which levels rules start at*. It reads the
+tier and confidence of each core rule's metadata and hands out levels accordingly
+(see :data:`PRESETS`); ``[tool.anti-slop.rules]`` then overrides the result rule by
+rule, so a preset is a starting point and never the last word. Leaving ``preset`` out
+is not a preset -- every rule starts at ``error``, exactly as before presets existed.
 """
 
 from __future__ import annotations
@@ -23,19 +29,32 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Literal, Protocol, cast
 
-from anti_slop.engine.rule import BoolOption, OptionValue, Rule, StrListOption
+from anti_slop.engine.rule import (
+    CONFIDENCE_HIGH,
+    TIER_ARCHITECTURAL,
+    TIER_ESCAPE_HATCH,
+    BoolOption,
+    OptionValue,
+    Rule,
+    RuleMetadata,
+    StrListOption,
+)
 
 __all__ = [
     "CONTRIB_PACKAGE",
     "DEFAULT_EXCLUDE",
     "KNOWN_GROUPS",
+    "PRESETS",
     "Config",
     "ConfigError",
     "GroupModule",
     "PathFilter",
+    "Preset",
     "RuleSetting",
+    "known_rules",
     "load_config",
     "load_group",
+    "preset_named",
     "resolve_registry",
 ]
 
@@ -49,7 +68,7 @@ LEVEL_WARN = "warn"
 LEVEL_OFF = "off"
 _LEVELS = (LEVEL_ERROR, LEVEL_WARN, LEVEL_OFF)
 
-_TOP_LEVEL_KEYS = frozenset({"groups", "include", "exclude", "rules"})
+_TOP_LEVEL_KEYS = frozenset({"groups", "include", "exclude", "preset", "rules"})
 
 # Where a group's subpackage lives, and the groups this distribution ships. The list
 # is explicit rather than a directory scan so that an unknown name fails with the
@@ -90,6 +109,81 @@ class RuleSetting:
     options: Mapping[str, OptionValue]
     severity: Literal["error", "warn"] = "error"
 
+    @property
+    def level(self) -> str:
+        """The configured level as written in ``pyproject.toml``: the two fields as one."""
+        return self.severity if self.enabled else LEVEL_OFF
+
+
+@dataclass(frozen=True, slots=True)
+class Preset:
+    """A named starting point for the levels of the *core* rules.
+
+    A preset reads two things from a rule's metadata: its tier decides which of the
+    two levels below applies, and its confidence decides whether a
+    ``high_confidence_only`` preset keeps it at all. Rules of an opt-in group are
+    never touched -- a group is enabled by ``groups`` and configured by name, and a
+    preset chosen for the core has no opinion about framework policy.
+    """
+
+    name: str
+    escape_hatch: str
+    architectural: str
+    summary: str
+    high_confidence_only: bool = False
+
+    def level_for(self, metadata: RuleMetadata) -> str:
+        """The level this preset gives a rule with ``metadata``."""
+        if metadata.tier == TIER_ESCAPE_HATCH:
+            if self.high_confidence_only and metadata.confidence != CONFIDENCE_HIGH:
+                return LEVEL_OFF
+            return self.escape_hatch
+        if metadata.tier == TIER_ARCHITECTURAL:
+            return self.architectural
+        return LEVEL_ERROR
+
+
+# The presets this distribution ships, in order from strictest to most forgiving.
+# `strict` is spelled out rather than treated as "no preset" so that writing it down
+# means the same thing as leaving `preset` out entirely.
+PRESETS: tuple[Preset, ...] = (
+    Preset(
+        name="strict",
+        escape_hatch=LEVEL_ERROR,
+        architectural=LEVEL_ERROR,
+        summary="every core rule at error -- the behaviour with no preset at all",
+    ),
+    Preset(
+        name="recommended",
+        escape_hatch=LEVEL_ERROR,
+        architectural=LEVEL_WARN,
+        summary="escape hatches block, architectural policy reports",
+    ),
+    Preset(
+        name="minimal",
+        escape_hatch=LEVEL_ERROR,
+        architectural=LEVEL_OFF,
+        summary="only the high-confidence escape-hatch rules, at error",
+        high_confidence_only=True,
+    ),
+    Preset(
+        name="legacy",
+        escape_hatch=LEVEL_WARN,
+        architectural=LEVEL_OFF,
+        summary="nothing blocks -- a starting point for a large old codebase",
+    ),
+)
+
+
+def preset_named(name: str, where: str) -> Preset:
+    """The preset called ``name``; an unknown name lists the ones that exist."""
+    for preset in PRESETS:
+        if preset.name == name:
+            return preset
+    available = ", ".join(entry.name for entry in PRESETS)
+    message = f"{where}: unknown preset {name!r} (known presets: {available})"
+    raise ConfigError(message)
+
 
 class GroupModule(Protocol):
     """What the ``__init__`` of an :mod:`anti_slop.contrib` group must expose.
@@ -112,7 +206,9 @@ class Config:
     ``pyproject.toml``, or the working directory when no configuration was found).
     ``registry`` is the effective rule set -- the core rules, with any message
     overrides the enabled ``groups`` applied, followed by the rules those groups
-    contribute. It is what the CLI runs and what ``--list-rules`` prints.
+    contribute. It is what the CLI runs and what ``--list-rules`` prints. ``preset``
+    records which preset produced the starting levels in ``rules``, or ``None`` when
+    the configuration named none.
     """
 
     root: Path
@@ -122,6 +218,15 @@ class Config:
     rules: Mapping[str, RuleSetting]
     groups: tuple[str, ...] = ()
     registry: tuple[Rule, ...] = ()
+    preset: str | None = None
+
+    def levels(self) -> dict[str, str]:
+        """Rule id -> configured level, for every rule in ``registry``."""
+        return {
+            rule.id: self.rules[rule.id].level
+            for rule in self.registry
+            if rule.id in self.rules
+        }
 
     def enabled_rules(self, registry: Sequence[Rule] | None = None) -> tuple[Rule, ...]:
         """The enabled rules of ``registry``, or of this config's own registry."""
@@ -201,13 +306,25 @@ def default_config(root: Path, registry: Sequence[Rule]) -> Config:
     )
 
 
-def _default_settings(registry: Sequence[Rule]) -> dict[str, RuleSetting]:
+def _default_settings(
+    registry: Sequence[Rule], preset: Preset | None = None
+) -> dict[str, RuleSetting]:
+    """Every rule at ``error``, or at the level ``preset`` gives it."""
     return {
-        rule.id: RuleSetting(
-            rule_id=rule.id, enabled=True, options=rule.default_options()
+        rule.id: _setting_at(
+            rule, LEVEL_ERROR if preset is None else preset.level_for(rule.metadata)
         )
         for rule in registry
     }
+
+
+def _setting_at(rule: Rule, level: str) -> RuleSetting:
+    return RuleSetting(
+        rule_id=rule.id,
+        enabled=level != LEVEL_OFF,
+        options=rule.default_options(),
+        severity=_severity_of(level),
+    )
 
 
 def load_group(name: str, where: str) -> GroupModule:
@@ -229,6 +346,20 @@ def load_group(name: str, where: str) -> GroupModule:
     # import each one through this function and read both attributes, so a group that
     # stopped declaring either would fail the suite rather than reach a user.
     return cast("GroupModule", module)
+
+
+def known_rules(core: Sequence[Rule], where: str) -> tuple[Rule, ...]:
+    """Every rule this distribution ships: ``core`` plus every known group's rules.
+
+    Not an effective registry -- no message overrides are applied and nothing here is
+    enabled. It exists so ``--explain`` can answer for a group's rule without the
+    group being configured: an explanation is documentation, and documentation should
+    not require turning a rule on first.
+    """
+    rules = list(core)
+    for name in KNOWN_GROUPS:
+        rules.extend(load_group(name, where).GROUP_RULES)
+    return tuple(rules)
 
 
 def resolve_registry(
@@ -362,8 +493,10 @@ def _load_from(path: Path, registry: Sequence[Rule]) -> Config:
     )
 
     groups = _read_groups(section.get("groups"), path)
+    preset_name = _read_preset(section.get("preset"), path)
+    preset = None if preset_name is None else preset_named(preset_name, str(path))
     effective = resolve_registry(registry, groups, str(path))
-    rules = _read_rules(section.get("rules"), path, effective)
+    rules = _read_rules(section.get("rules"), path, effective, preset)
     return Config(
         root=root,
         source=path,
@@ -372,7 +505,18 @@ def _load_from(path: Path, registry: Sequence[Rule]) -> Config:
         rules=rules,
         groups=groups,
         registry=effective,
+        preset=preset_name,
     )
+
+
+def _read_preset(value: TomlValue | None, path: Path) -> str | None:
+    """The ``preset`` key: a string naming one of :data:`PRESETS`, or nothing."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        message = f"{path}: [tool.{SECTION}].preset must be a string"
+        raise ConfigError(message)
+    return value
 
 
 def _read_groups(value: TomlValue | None, path: Path) -> tuple[str, ...]:
@@ -405,10 +549,18 @@ def _read_str_list(
 
 
 def _read_rules(
-    value: TomlValue | None, path: Path, registry: Sequence[Rule]
+    value: TomlValue | None,
+    path: Path,
+    registry: Sequence[Rule],
+    preset: Preset | None = None,
 ) -> dict[str, RuleSetting]:
+    """The preset's levels, then ``[tool.anti-slop.rules]`` on top of them.
+
+    An entry in ``rules`` always wins: a preset is where a project starts, not a
+    ceiling on what it can say afterwards.
+    """
     known = {rule.id: rule for rule in registry}
-    settings = _default_settings(registry)
+    settings = _default_settings(registry, preset)
     if value is None:
         return settings
     if not isinstance(value, dict):
@@ -424,11 +576,21 @@ def _read_rules(
                 f" (known rules: {available})"
             )
             raise ConfigError(message)
-        settings[rule_id] = _read_rule_setting(rule, raw, path)
+        settings[rule_id] = _read_rule_setting(
+            rule, raw, path, settings[rule_id].level
+        )
     return settings
 
 
-def _read_rule_setting(rule: Rule, raw: TomlValue, path: Path) -> RuleSetting:
+def _read_rule_setting(
+    rule: Rule, raw: TomlValue, path: Path, fallback_level: str = LEVEL_ERROR
+) -> RuleSetting:
+    """One ``[tool.anti-slop.rules]`` entry, resolved.
+
+    ``fallback_level`` is the level the rule already had -- the preset's, or ``error``
+    without one -- and it applies to the table form when no ``level`` key is given, so
+    that setting an option does not silently re-raise a rule the preset lowered.
+    """
     where = f"[tool.{SECTION}.rules].{rule.id}"
     options = rule.default_options()
 
@@ -448,7 +610,7 @@ def _read_rule_setting(rule: Rule, raw: TomlValue, path: Path) -> RuleSetting:
         )
         raise ConfigError(message)
 
-    level = LEVEL_ERROR
+    level = fallback_level
     for key, entry in raw.items():
         if key == "level":
             if not isinstance(entry, str):

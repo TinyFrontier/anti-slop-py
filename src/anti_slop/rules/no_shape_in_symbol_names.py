@@ -1,10 +1,7 @@
 """``no-shape-in-symbol-names`` -- reject a banned term in a *declared* name.
 
-A name like ``compute_shape`` or ``board_shape`` names
-what a value *looks like* (its structural shape) instead of what it *is* in the
-domain -- a slop name that forces every reader to reconstruct intent from a
-structural description. The configurable ``terms`` option (default ``("shape",)``)
-lists the banned substrings, matched case-insensitively.
+The configurable ``terms`` option (default ``("shape",)``) lists the banned
+substrings, matched case-insensitively.
 
 This rule looks only at *declarations* of new names, never at *uses* of existing
 ones -- the false-positive surface of a naive substring rule is numpy/pandas'
@@ -29,14 +26,10 @@ declared name: ``self.shape = value`` (an ``ast.Attribute`` assignment target) a
 any attribute access such as ``array.shape`` (never a declaration to begin with).
 String contents are never inspected -- only the AST's own name-carrying nodes.
 
-Known limitations (final term list is a phase-5 tuning decision, not a phase-1
-concern):
-
-* ``match``/``case`` capture patterns (``case shape:``, ``case Point(x=shape):``)
-  bind new names but are not walked by this rule.
-* ``for``/``async for`` loop targets, comprehension targets and ``with``/``async
-  with`` ``as`` targets are not walked either, even though they bind new names --
-  only the four categories listed above are in scope for phase 1.
+Name-binding forms outside those four categories are not walked at all:
+``match``/``case`` capture patterns (``case shape:``, ``case Point(x=shape):``),
+``for``/``async for`` loop targets, comprehension targets, and ``with``/``async with``
+``as`` targets.
 """
 
 from __future__ import annotations
@@ -45,7 +38,15 @@ import ast
 from collections.abc import Iterator, Sequence
 
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, StrListOption, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_POLICY,
+    FIX_NONE,
+    TIER_ARCHITECTURAL,
+    Rule,
+    RuleMetadata,
+    StrListOption,
+    on,
+)
 
 __all__ = ["RULE", "RULE_ID"]
 
@@ -172,6 +173,45 @@ def _iter_parameters(arguments: ast.arguments) -> Iterator[ast.arg]:
         yield arguments.kwarg
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_ARCHITECTURAL,
+    confidence=CONFIDENCE_POLICY,
+    fix=FIX_NONE,
+    tags=("naming",),
+    problem=(
+        "A name built out of a structural term says what a value *looks like*"
+        " instead of what it *is* in the domain. Every reader then reconstructs the"
+        " intent from a description of the data's form, and the name survives"
+        " unchanged when the form changes. These are the names that appear when code"
+        " is written without a domain in mind -- the naming counterpart of the"
+        " evidence-discarding the other rules catch."
+    ),
+    recipe=(
+        "Rename to what the value is in the domain -- `board`, `image_size`,"
+        " `tensor_dimensions` -- and reserve structural terms for the places where"
+        " the shape genuinely is the domain concept, such as a numpy array's own"
+        " `.shape` attribute. Replacing the default term list with terms that are"
+        " actually slop names locally is often more useful than adopting it as-is."
+    ),
+    when_to_disable=(
+        "The most codebase-dependent rule in the set, because the banned term is"
+        " configuration rather than a language construct. Suggested postures:"
+        " `error` in a business backend, `warn` in a framework or library, and `off`"
+        " -- or `terms = []`, which disables the rule from inside its own"
+        " configuration -- in ML/scientific code where `shape` is domain vocabulary."
+        " On the two field repositories the default list produced 11-14 hits each,"
+        " all domain names in tests, resolved with per-line suppressions."
+    ),
+    fp_caveats=(
+        "Matching is a case-insensitive substring test on declared names, so a term"
+        " that appears inside an unrelated word matches too. Only declarations are"
+        " checked: attribute targets (`self.shape = value`) and attribute reads"
+        " (`array.shape`) are never flagged, and neither are the name-binding forms"
+        " the rule does not walk -- `match` captures, loop and comprehension targets,"
+        " `with ... as` targets. String contents are never inspected."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description="A declared name must not encode a banned structural term.",
@@ -187,5 +227,6 @@ RULE = Rule(
         on(ast.Import, _check_import),
         on(ast.ImportFrom, _check_import),
     ),
+    metadata=_METADATA,
     options=(_TERMS,),
 )

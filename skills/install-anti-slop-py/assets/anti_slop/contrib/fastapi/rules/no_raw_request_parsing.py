@@ -1,13 +1,5 @@
 """``fastapi/no-raw-request-parsing`` -- reject reading the body off ``Request``.
 
-``await request.json()`` inside a route handler steps around the boundary the
-framework exists to provide. The body arrives as whatever ``json.loads`` produced,
-nothing is validated, a malformed payload raises inside the handler (a 500 where the
-framework would have answered 422), the endpoint's OpenAPI schema documents no
-request body at all, and every reader has to go through the function body to find out
-what the endpoint accepts. It is the FastAPI-shaped version of parsing at the wrong
-layer, and the fix is always the same: put the body in the signature.
-
 Flagged: ``request.json()``, ``request.form()`` and ``request.body()`` -- with or
 without ``await`` -- called inside a route handler on a name that lexically resolves
 to a parameter of *that* handler annotated ``Request`` (bare, ``fastapi.Request``,
@@ -36,7 +28,14 @@ from anti_slop.contrib.fastapi._routes import (
     is_request_parameter,
 )
 from anti_slop.engine.context import RuleContext
-from anti_slop.engine.rule import Rule, on
+from anti_slop.engine.rule import (
+    CONFIDENCE_POLICY,
+    FIX_NONE,
+    TIER_FRAMEWORK,
+    Rule,
+    RuleMetadata,
+    on,
+)
 from anti_slop.engine.scopes import scope_table_for
 
 __all__ = ["RULE", "RULE_ID"]
@@ -79,6 +78,45 @@ def _body_reader_receiver(func: ast.expr) -> ast.expr | None:
             return None
 
 
+_METADATA = RuleMetadata(
+    tier=TIER_FRAMEWORK,
+    confidence=CONFIDENCE_POLICY,
+    fix=FIX_NONE,
+    tags=("fastapi",),
+    problem=(
+        "`await request.json()` inside a route handler steps around the boundary the"
+        " framework exists to provide. The body arrives as whatever `json.loads`"
+        " produced, nothing is validated, a malformed payload raises inside the"
+        " handler as a 500 where the framework would have answered 422, the"
+        " endpoint's OpenAPI schema documents no request body at all, and every"
+        " reader has to go through the function body to find out what the endpoint"
+        " accepts."
+    ),
+    recipe=(
+        "Declare the body in the signature and let FastAPI decode and validate it"
+        " before the handler runs: a pydantic `BaseModel` parameter for JSON,"
+        " `Form(...)` fields or `UploadFile` for form data. Keep the `Request`"
+        " parameter only for what genuinely is not the body -- headers, the client"
+        " address, the raw stream."
+    ),
+    when_to_disable=(
+        "The `fastapi` group is opt-in and off unless `groups = [\"fastapi\"]` names"
+        " it, so no preset ever turns this rule on. A gateway or webhook receiver"
+        " that must see the raw bytes -- signature verification over the exact body,"
+        " a proxy that forwards it untouched -- has a real reason to read the request"
+        " directly, and those handlers are worth a per-line suppression rather than"
+        " turning the rule off for the service."
+    ),
+    fp_caveats=(
+        "The receiver must lexically resolve to a parameter of the *nearest*"
+        " enclosing route handler, annotated `Request`. A helper function, a"
+        " middleware, a nested function inside a handler, an unannotated parameter or"
+        " a module-level object all stay silent -- nothing there proves the receiver"
+        " is that handler's own request. `request.stream()`, `.headers` and"
+        " `.query_params` are never flagged: this rule is about parsing the body."
+    ),
+)
+
 RULE = Rule(
     id=RULE_ID,
     description=(
@@ -87,4 +125,5 @@ RULE = Rule(
     ),
     messages={"raw_body": _MESSAGE},
     handlers=(on(ast.Call, _check_call),),
+    metadata=_METADATA,
 )
