@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Create the environment
+        run: |
+          uv venv --python 3.12
+          uv pip install -e . --group dev
+
+      - name: Tests
+        run: .venv/bin/pytest
+
+      - name: Types
+        run: .venv/bin/ty check src/ tests/ scripts/
+
+      # Dogfooding (PLAN.md section 3.6): the linter's own code obeys its own rules.
+      - name: Self-lint
+        run: |
+          .venv/bin/python -m anti_slop
+          .venv/bin/python -m anti_slop scripts skills/install-anti-slop-py/scripts
+
+      # The skill ships a vendored copy of src/anti_slop; it has to be identical.
+      - name: Skill assets in sync
+        run: .venv/bin/python scripts/sync_skill_assets.py --check
